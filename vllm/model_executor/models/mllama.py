@@ -755,6 +755,10 @@ class MllamaCrossAttentionDecoderLayer(torch.nn.Module):
             kv_cache=kv_cache,
             attn_metadata=attn_metadata,
         )
+        # the rank of full_text_row_masked_out_mask is 2, not match with the hidden_states, so expand its rank to 3.
+        # TODO: Change input_tokens tensor at the beginning of model execution to 2D tensor to align with public vllm input_tokens shape.
+        #       But this may face the graph building failure issue, still need to investigate.
+        full_text_row_masked_out_mask = full_text_row_masked_out_mask.view(hidden_states.size(0), -1, 1)
         hidden_states = full_text_row_masked_out_mask * hidden_states
         hidden_states = residual + self.cross_attn_attn_gate.tanh(
         ) * hidden_states
@@ -812,10 +816,14 @@ class MllamaTextModel(nn.Module):
     ) -> torch.Tensor:
         inputs_embeds = self.embed_tokens(input_ids)
         hidden_states = inputs_embeds
+        # hidden_states = hidden_states.reshape(-1, hidden_states.size(-1))
+        # print("pre hidden_states size:", hidden_states.size())
 
         for idx, decoder_layer in enumerate(self.layers):
+            print("decoder_layer idx:", idx)
             if isinstance(decoder_layer, MllamaCrossAttentionDecoderLayer):
                 if not skip_cross_attention:
+                    print("MllamaCrossAttentionDecoderLayer")
                     hidden_states = decoder_layer(
                         hidden_states=hidden_states,
                         cross_attention_states=cross_attention_states,
@@ -826,6 +834,7 @@ class MllamaTextModel(nn.Module):
                         attn_metadata=attn_metadata,
                     )
             elif isinstance(decoder_layer, LlamaDecoderLayer):
+                print("LlamaDecoderLayer")
                 hidden_states, residual = decoder_layer(
                     positions=positions,
                     hidden_states=hidden_states,
@@ -833,6 +842,8 @@ class MllamaTextModel(nn.Module):
                     attn_metadata=attn_metadata,
                     residual=None,
                 )
+                print("hidden_states size:", hidden_states.size())
+                print("residual size:", residual.size())
                 hidden_states = hidden_states + residual
             else:
                 raise ValueError(
@@ -1070,6 +1081,7 @@ class MllamaForConditionalGeneration(nn.Module, SupportsMultiModal):
             raise ValueError("Chunk prefill not supported")
         image_inputs = self._parse_and_validate_image_input(**kwargs)
         if image_inputs is None:
+            print(">>>>>>>>>>>>>>Next Token!!!!!")
             cross_attention_mask = None
             full_text_row_masked_out_mask = (
                 attn_metadata.encoder_seq_lens_tensor != 0).reshape(-1, 1).to(
@@ -1078,6 +1090,7 @@ class MllamaForConditionalGeneration(nn.Module, SupportsMultiModal):
             skip_cross_attention = max(attn_metadata.encoder_seq_lens) == 0
         else:
             # NOTE: llama's reference implementation runs vision model on CPU
+            print(">>>>>>>>>>>>>>First Token!!!!!")
             pixel_values = image_inputs['data']
             aspect_ratio_ids = image_inputs['aspect_ratio_ids']
             aspect_ratio_mask = image_inputs['aspect_ratio_mask']
@@ -1088,6 +1101,7 @@ class MllamaForConditionalGeneration(nn.Module, SupportsMultiModal):
                 cross_attention_states)
 
             bsz, _, _, _, image_token_dim = tuple(cross_attention_states.shape)
+            print("cross_attn_shape:", cross_attention_states.shape)
             cross_attention_states = cross_attention_states.view(
                 bsz, -1, image_token_dim)
 

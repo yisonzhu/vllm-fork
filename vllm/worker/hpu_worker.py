@@ -26,6 +26,7 @@ from vllm.sequence import ExecuteModelRequest
 from vllm.utils import hpu_backend_string, hpu_device_string, is_fake_hpu
 from vllm.worker.cache_engine import CacheEngine
 from vllm.worker.hpu_model_runner import HPUModelRunner
+from vllm.worker.enc_dec_model_runner import EncoderDecoderModelRunner
 from vllm.worker.model_runner_base import ModelRunnerBase
 from vllm.worker.worker_base import LocalOrDistributedWorkerBase, WorkerInput
 
@@ -90,7 +91,8 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             kv_cache_dtype=self.cache_config.cache_dtype,
             is_driver_worker=is_driver_worker,
             prompt_adapter_config=prompt_adapter_config,
-            observability_config=observability_config)
+            observability_config=observability_config,
+            is_encoder_decoder_model=self._is_encoder_decoder_model())
         # Uninitialized cache engine. Will be initialized by
         # initialize_cache.
         self.cache_engine: List[HPUCacheEngine]
@@ -112,6 +114,9 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     torch_profiler_trace_dir, use_gzip=True))
         else:
             self.profiler = None
+
+    def _is_encoder_decoder_model(self):
+        return self.model_config.is_encoder_decoder_model
 
     def start_profile(self):
         if self.profiler is None:
