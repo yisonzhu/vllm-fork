@@ -3,7 +3,6 @@ import gc
 import json
 import os
 import sys
-import copy
 import tempfile
 from collections import UserList
 from enum import Enum
