@@ -14,6 +14,7 @@
 # limitations under the License.
 """PyTorch Mllama model."""
 import math
+import sys
 from array import array
 from typing import (Iterable, List, Literal, Mapping, Optional, Tuple,
                     TypedDict, Union)
@@ -22,6 +23,7 @@ import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
 import transformers.models.mllama.configuration_mllama as config_mllama
+from vllm.platforms import current_platform
 from PIL import Image
 from torch import nn
 from transformers.modeling_outputs import (BaseModelOutput,
@@ -57,6 +59,10 @@ logger = init_logger(__name__)
 MLLAMA_IMAGE_TOKEN_ID = 128256
 MLLAMA_IMAGE_TOKEN = "<|image|>"
 
+is_hpu = current_platform.is_hpu()
+
+if is_hpu:
+    import habana_frameworks.torch as htorch
 
 class MllamaImagePixelInputs(TypedDict):
     type: Literal["pixel_values"]
@@ -424,6 +430,8 @@ class MllamaVisionEncoder(nn.Module):
     ) -> Union[Tuple, BaseModelOutput]:
         encoder_states = ()
 
+        if is_hpu:
+            htorch.core.mark_step()
         for i, encoder_layer in enumerate(self.layers):
             if i in self.output_hidden_states:
                 encoder_states = encoder_states + (hidden_states, )
@@ -431,6 +439,8 @@ class MllamaVisionEncoder(nn.Module):
                 hidden_states,
                 attention_mask,
             )
+            if is_hpu:
+                htorch.core.mark_step()
 
         if len(self.layers) - 1 in self.output_hidden_states:
             encoder_states = encoder_states + (hidden_states, )
@@ -816,14 +826,11 @@ class MllamaTextModel(nn.Module):
     ) -> torch.Tensor:
         inputs_embeds = self.embed_tokens(input_ids)
         hidden_states = inputs_embeds
-        # hidden_states = hidden_states.reshape(-1, hidden_states.size(-1))
-        # print("pre hidden_states size:", hidden_states.size())
-
+        if is_hpu:
+            htorch.core.mark_step()
         for idx, decoder_layer in enumerate(self.layers):
-            print("decoder_layer idx:", idx)
             if isinstance(decoder_layer, MllamaCrossAttentionDecoderLayer):
                 if not skip_cross_attention:
-                    print("MllamaCrossAttentionDecoderLayer")
                     hidden_states = decoder_layer(
                         hidden_states=hidden_states,
                         cross_attention_states=cross_attention_states,
@@ -834,7 +841,6 @@ class MllamaTextModel(nn.Module):
                         attn_metadata=attn_metadata,
                     )
             elif isinstance(decoder_layer, LlamaDecoderLayer):
-                print("LlamaDecoderLayer")
                 hidden_states, residual = decoder_layer(
                     positions=positions,
                     hidden_states=hidden_states,
@@ -842,12 +848,12 @@ class MllamaTextModel(nn.Module):
                     attn_metadata=attn_metadata,
                     residual=None,
                 )
-                print("hidden_states size:", hidden_states.size())
-                print("residual size:", residual.size())
                 hidden_states = hidden_states + residual
             else:
                 raise ValueError(
                     f"Unknown decoder layer type {type(decoder_layer)}")
+            if is_hpu:
+                htorch.core.mark_step()
         hidden_states = self.norm(hidden_states)
         return hidden_states
 
@@ -1081,7 +1087,6 @@ class MllamaForConditionalGeneration(nn.Module, SupportsMultiModal):
             raise ValueError("Chunk prefill not supported")
         image_inputs = self._parse_and_validate_image_input(**kwargs)
         if image_inputs is None:
-            print(">>>>>>>>>>>>>>Next Token!!!!!")
             cross_attention_mask = None
             full_text_row_masked_out_mask = (
                 attn_metadata.encoder_seq_lens_tensor != 0).reshape(-1, 1).to(
@@ -1090,7 +1095,6 @@ class MllamaForConditionalGeneration(nn.Module, SupportsMultiModal):
             skip_cross_attention = max(attn_metadata.encoder_seq_lens) == 0
         else:
             # NOTE: llama's reference implementation runs vision model on CPU
-            print(">>>>>>>>>>>>>>First Token!!!!!")
             pixel_values = image_inputs['data']
             aspect_ratio_ids = image_inputs['aspect_ratio_ids']
             aspect_ratio_mask = image_inputs['aspect_ratio_mask']
@@ -1101,7 +1105,6 @@ class MllamaForConditionalGeneration(nn.Module, SupportsMultiModal):
                 cross_attention_states)
 
             bsz, _, _, _, image_token_dim = tuple(cross_attention_states.shape)
-            print("cross_attn_shape:", cross_attention_states.shape)
             cross_attention_states = cross_attention_states.view(
                 bsz, -1, image_token_dim)
 
@@ -1154,3 +1157,5 @@ class MllamaForConditionalGeneration(nn.Module, SupportsMultiModal):
                 weight_loader = getattr(param, "weight_loader",
                                         default_weight_loader)
                 weight_loader(param, loaded_weight)
+            if is_hpu:
+                torch.hpu.synchronize()

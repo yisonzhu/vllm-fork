@@ -339,11 +339,11 @@ class HpuModelAdapter():
                             device=device,
                             dtype=torch.int32).unsqueeze(0)
         attn_mask = mask >= metadata.block_usage.unsqueeze(-1)
-        attn_bias = (torch.zeros_like(mask, dtype=dtype).masked_fill_(
+        attn_bias = (torch.zeros_like(attn_mask, dtype=dtype).masked_fill_(
             attn_mask, -math.inf))
         if metadata.cross_block_usage is not None:
             cross_attn_mask = mask >= metadata.cross_block_usage.unsqueeze(-1)
-            cross_attn_bias = (torch.zeros_like(mask, dtype=dtype).masked_fill_(
+            cross_attn_bias = (torch.zeros_like(cross_attn_mask, dtype=dtype).masked_fill_(
                 cross_attn_mask, -math.inf))
 
         if not is_fake_hpu() and htorch.utils.internal.is_lazy():
@@ -1023,6 +1023,9 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             slot_mapping=slot_mapping,
         )
         multi_modal_kwargs = MultiModalInputs.batch(multi_modal_inputs_list)
+        for t in multi_modal_kwargs:
+            if torch.is_tensor(multi_modal_kwargs[t]):
+                multi_modal_kwargs[t] = multi_modal_kwargs[t].to(self.device)
 
         return PreparePromptMetadata(input_tokens=input_tokens,
                                      input_positions=input_positions,
@@ -1331,7 +1334,6 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             attn_metadata.cross_block_scales = block_scales
             attn_metadata.cross_block_usage = block_usage
 
-        print("encoder_seq_lens is ", encoder_seq_lens)
         encoder_seq_lens_tensor = _list_to_int32_tensor(encoder_seq_lens, self.device)
         encoder_seq_start_loc = torch.zeros(encoder_seq_lens_tensor.shape[0] +
                                             1,

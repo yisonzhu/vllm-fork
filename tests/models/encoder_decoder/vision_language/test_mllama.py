@@ -257,3 +257,40 @@ def test_models(hf_runner, vllm_runner, image_assets, model, sizes, dtype,
         num_logprobs=num_logprobs,
         tensor_parallel_size=1,
     )
+
+
+@pytest.mark.parametrize("model", models)
+@pytest.mark.parametrize(
+    "sizes",
+    [
+        # Text only
+        # [],
+        # Single-size
+        # [(512, 512)],
+        # Single-size, batched
+        [(512, 512), (512, 512), (512, 512)],
+        # Multi-size, batched
+        # [(512, 512), (1024, 512), (1536, 512), (2048, 512), (512, 1024),
+        #  (1024, 1024), (512, 1536), (512, 2028)],
+        # Multi-size, batched, including text only
+        # [(512, 512), (1024, 512), (1536, 512), (2048, 512), (512, 1024),
+        #  (1024, 1024), (512, 1536), (512, 2028), None],
+        # mllama has 8 possible aspect ratios, carefully set the sizes
+        # to cover all of them
+    ])
+@pytest.mark.parametrize("dtype", ["bfloat16"])
+@pytest.mark.parametrize("max_tokens", [128])
+@pytest.mark.parametrize("num_logprobs", [5])
+def test_hpu_models(hf_hpu_runner, vllm_runner, image_assets, model, sizes, dtype,
+                max_tokens, num_logprobs) -> None:
+    run_test(
+        hf_hpu_runner,
+        vllm_runner,
+        image_assets,
+        model,
+        sizes=sizes,
+        dtype=dtype,
+        max_tokens=max_tokens,
+        num_logprobs=num_logprobs,
+        tensor_parallel_size=1,
+    )
