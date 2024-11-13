@@ -1,5 +1,5 @@
-vLLM with Intel® Gaudi® AI Accelerators
-=========================================
+Installation with Intel® Gaudi® AI Accelerators
+===============================================
 
 This README provides instructions on running vLLM with Intel Gaudi devices.
 
@@ -22,7 +22,7 @@ Requirements
 
 
 Quick start using Dockerfile
-============================
+----------------------------
 .. code:: console
 
    $ docker build -f Dockerfile.hpu -t vllm-hpu-env  .
@@ -30,14 +30,14 @@ Quick start using Dockerfile
 
 
 .. tip::
-   If you're observing the following error: ``docker: Error response from daemon: Unknown runtime specified habana.``, please refer to "Install Using Containers" section of `Intel Gaudi Software Stack and Driver Installation <https://docs.habana.ai/en/v1.18.0/Installation_Guide/Bare_Metal_Fresh_OS.html`__. Make sure you have ``habana-container-runtime`` package installed and that ```habana`` container runtime is registered.
+   If you're observing the following error: ``docker: Error response from daemon: Unknown runtime specified habana.``, please refer to "Install optional packages" section of `Install Driver and Software <https://docs.habana.ai/en/latest/Installation_Guide/Driver_Installation.html#install-driver-and-software>`__ and "Configure Container Runtime" section of `Docker Installation <https://docs.habana.ai/en/latest/Installation_Guide/Installation_Methods/Docker_Installation.html#configure-container-runtime>`__. Make sure you have ``habanalabs-container-runtime`` package installed and that ``habana`` container runtime is registered.
 
 
 Build from source
-=================
+-----------------
 
 Environment verification
-------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~
 
 To verify that the Intel Gaudi software was correctly installed, run:
 
@@ -48,16 +48,15 @@ To verify that the Intel Gaudi software was correctly installed, run:
    $ pip list | grep habana # verify that habana-torch-plugin, habana-torch-dataloader, habana-pyhlml and habana-media-loader are installed
    $ pip list | grep neural # verify that neural_compressor is installed
 
-Refer to `Intel Gaudi Software Stack
-Verification <https://docs.habana.ai/en/latest/Installation_Guide/Platform_Upgrade_and_Unboxing.html#system-verifications-and-final-tests>`__
+Refer to `System Verification and Final Tests <https://docs.habana.ai/en/latest/Installation_Guide/System_Verification_and_Final_Tests.html>`__
 for more details.
 
 Run Docker Image
-----------------
+~~~~~~~~~~~~~~~~
 
 It is highly recommended to use the latest Docker image from Intel Gaudi
 vault. Refer to the `Intel Gaudi
-documentation <https://docs.habana.ai/en/latest/Installation_Guide/Bare_Metal_Fresh_OS.html#pull-prebuilt-containers>`__
+documentation <https://docs.habana.ai/en/latest/Installation_Guide/Installation_Methods/Docker_Installation.html#use-intel-gaudi-containers>`__
 for more details.
 
 Use the following commands to run a Docker image:
@@ -68,7 +67,17 @@ Use the following commands to run a Docker image:
    $ docker run -it --runtime=habana -e HABANA_VISIBLE_DEVICES=all -e OMPI_MCA_btl_vader_single_copy_mechanism=none --cap-add=sys_nice --net=host --ipc=host vault.habana.ai/gaudi-docker/1.18.0/ubuntu22.04/habanalabs/pytorch-installer-2.4.0:latest
 
 Build and Install vLLM
----------------------------
+~~~~~~~~~~~~~~~~~~~~~~
+
+To build and install vLLM from source, run:
+
+.. code:: console
+
+   $ git clone https://github.com/vllm-project/vllm.git
+   $ cd vllm
+   $ pip install -r requirements-hpu.txt
+   $ python setup.py develop
+
 
 Currently, the latest features and performance optimizations are developed in Gaudi's `vLLM-fork <https://github.com/HabanaAI/vllm-fork>`__ and we periodically upstream them to vLLM main repo. To install latest `HabanaAI/vLLM-fork <https://github.com/HabanaAI/vllm-fork>`__, run the following:
 
@@ -77,16 +86,17 @@ Currently, the latest features and performance optimizations are developed in Ga
    $ git clone https://github.com/HabanaAI/vllm-fork.git
    $ cd vllm-fork
    $ git checkout habana_main
-   $ pip install -e .
+   $ pip install -r requirements-hpu.txt
+   $ python setup.py develop
 
 
 Supported Features
 ==================
 
 -  `Offline batched
-   inference <https://github.com/HabanaAI/vllm-fork/blob/habana_main/docs/source/getting_started/quickstart.rst#offline-batched-inference>`__
+   inference <https://docs.vllm.ai/en/latest/getting_started/quickstart.html#offline-batched-inference>`__
 -  Online inference via `OpenAI-Compatible
-   Server <https://github.com/HabanaAI/vllm-fork/blob/habana_main/docs/source/getting_started/quickstart.rst#openai-compatible-server>`__
+   Server <https://docs.vllm.ai/en/latest/getting_started/quickstart.html#openai-compatible-server>`__
 -  HPU autodetection - no need to manually select device within vLLM
 -  Paged KV cache with algorithms enabled for Intel Gaudi accelerators
 -  Custom Intel Gaudi implementations of Paged Attention, KV cache ops,
@@ -368,7 +378,7 @@ Environment variables
          - sequence length min (``VLLM_DECODE_BLOCK_BUCKET_MIN``): ``block_size``
          - sequence length step (``VLLM_DECODE_BLOCK_BUCKET_STEP``): ``block_size``
          - sequence length max (``VLLM_DECODE_BLOCK_BUCKET_MAX``): ``max(128, (max_num_seqs*max_model_len)/block_size)``
-
+-  ``VLLM_HANDLE_TOPK_DUPLICATES``: if ``true``, will handle duplicates that are outside of top-k, ``false`` by default
 
 Additionally, there are HPU PyTorch Bridge environment variables impacting vLLM execution:  
 

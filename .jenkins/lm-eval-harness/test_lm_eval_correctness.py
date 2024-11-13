@@ -54,6 +54,9 @@ def launch_lm_eval(eval_config):
         model_args += ",quantization=inc," \
             "kv_cache_dtype=fp8_inc," \
             "weights_load_device=cpu"
+    if eval_config.get("num_scheduler_steps"):
+        model_args += \
+            f",num_scheduler_steps={eval_config.get('num_scheduler_steps')}"
     kwargs = {}
     if 'fewshot_as_multiturn' in eval_config:
         kwargs['fewshot_as_multiturn'] = eval_config['fewshot_as_multiturn']
@@ -76,18 +79,14 @@ def report_performance(task, input_lens, output_lens, time, record_property):
     context_lens = [i + o for i, o in zip(input_lens, output_lens)]
     gen_tput = sum(output_lens) / time
     all_lens = [input_lens, output_lens, context_lens]
-    min_input_tokens, min_output_tokens, min_context_tokens = [
-        min(x) for x in all_lens
-    ]
-    max_input_tokens, max_output_tokens, max_context_tokens = [
-        max(x) for x in all_lens
-    ]
-    mean_input_tokens, mean_output_tokens, mean_context_tokens = [
-        statistics.mean(x) for x in all_lens
-    ]
-    stddev_input_tokens, stddev_output_tokens, stddev_context_tokens = [
-        statistics.stdev(x) for x in all_lens
-    ]
+    min_input_tokens, min_output_tokens, min_context_tokens = (
+        min(x) for x in all_lens)
+    max_input_tokens, max_output_tokens, max_context_tokens = (
+        max(x) for x in all_lens)
+    mean_input_tokens, mean_output_tokens, mean_context_tokens = (
+        statistics.mean(x) for x in all_lens)
+    stddev_input_tokens, stddev_output_tokens, stddev_context_tokens = (
+        statistics.stdev(x) for x in all_lens)
     msg = (
         f'{task} | estimated average generation throughput: {gen_tput:.2f} tokens/s \n'  # noqa: G004, E501
         f'{task} | input_tokens   | min: {min_input_tokens} | max: {max_input_tokens} | mean: {mean_input_tokens:.2f} | stddev: {stddev_input_tokens:.2f}\n'  # noqa: E501

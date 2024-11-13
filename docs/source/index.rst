@@ -43,8 +43,7 @@ vLLM is flexible and easy to use with:
 * Tensor parallelism and pipeline parallelism support for distributed inference
 * Streaming outputs
 * OpenAI-compatible API server
-* Support NVIDIA GPUs, AMD CPUs and GPUs, Intel CPUs and GPUs, PowerPC CPUs, TPU, and AWS Trainium and Inferentia Accelerators.
-* (Experimental) Support for Intel® Gaudi® 2 accelerators
+* Support NVIDIA GPUs, AMD CPUs and GPUs, Intel CPUs, Gaudi® accelerators and GPUs, PowerPC CPUs, TPU, and AWS Trainium and Inferentia Accelerators.
 * Prefix caching support
 * Multi-lora support
 
@@ -82,6 +81,7 @@ Documentation
    serving/openai_compatible_server
    serving/deploying_with_docker
    serving/deploying_with_k8s
+   serving/deploying_with_nginx
    serving/distributed_serving
    serving/metrics
    serving/env_vars
@@ -135,6 +135,7 @@ Documentation
    :caption: Developer Documentation
 
    dev/sampling_params
+   dev/pooling_params
    dev/offline_inference/offline_index
    dev/engine/engine_index
    dev/kernel/paged_attention

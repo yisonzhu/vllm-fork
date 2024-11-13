@@ -12,10 +12,7 @@ import torch.distributed
 from vllm_hpu_extension.profiler import HabanaMemoryProfiler, format_bytes
 
 import vllm.envs as envs
-from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
-                         ModelConfig, ObservabilityConfig, ParallelConfig,
-                         PromptAdapterConfig, SchedulerConfig,
-                         SpeculativeConfig)
+from vllm.config import ParallelConfig, VllmConfig
 from vllm.distributed import (ensure_model_parallel_initialized,
                               init_distributed_environment)
 from vllm.logger import init_logger
@@ -26,9 +23,8 @@ from vllm.sequence import ExecuteModelRequest
 from vllm.utils import hpu_backend_string, hpu_device_string, is_fake_hpu
 from vllm.worker.cache_engine import CacheEngine
 from vllm.worker.hpu_model_runner import HPUModelRunner
-from vllm.worker.enc_dec_model_runner import EncoderDecoderModelRunner
-from vllm.worker.model_runner_base import ModelRunnerBase
-from vllm.worker.worker_base import LocalOrDistributedWorkerBase, WorkerInput
+from vllm.worker.worker_base import (LocalOrDistributedWorkerBase, WorkerBase,
+                                     WorkerInput)
 
 logger = init_logger(__name__)
 
@@ -43,34 +39,18 @@ class HPUWorker(LocalOrDistributedWorkerBase):
 
     def __init__(
         self,
-        model_config: ModelConfig,
-        parallel_config: ParallelConfig,
-        scheduler_config: SchedulerConfig,
-        device_config: DeviceConfig,
-        cache_config: CacheConfig,
-        load_config: LoadConfig,
+        vllm_config: VllmConfig,
         local_rank: int,
         rank: int,
         distributed_init_method: str,
-        lora_config: Optional[LoRAConfig] = None,
-        speculative_config: Optional[SpeculativeConfig] = None,
-        prompt_adapter_config: Optional[PromptAdapterConfig] = None,
         is_driver_worker: bool = False,
-        model_runner_cls: Optional[Type[ModelRunnerBase]] = None,
-        observability_config: Optional[ObservabilityConfig] = None,
+        model_runner_cls: Optional[Type[HPUModelRunner]] = None,
     ) -> None:
-        self.model_config = model_config
-        self.parallel_config = parallel_config
+        WorkerBase.__init__(self, vllm_config=vllm_config)
         self.parallel_config.rank = rank
-        self.scheduler_config = scheduler_config
-        self.device_config = device_config
-        self.cache_config = cache_config
         self.local_rank = local_rank
         self.rank = rank
         self.distributed_init_method = distributed_init_method
-        self.lora_config = lora_config
-        self.load_config = load_config
-        self.prompt_adapter_config = prompt_adapter_config
         self.is_driver_worker = is_driver_worker
         if self.is_driver_worker:
             assert self.rank == 0, "The driver worker must have rank 0."
@@ -80,19 +60,29 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             from vllm.utils import init_cached_hf_modules
             init_cached_hf_modules()
 
-        self.model_runner: HPUModelRunner = HPUModelRunner(
-            model_config,
-            parallel_config,
-            scheduler_config,
-            device_config,
-            cache_config,
-            load_config=load_config,
-            lora_config=self.lora_config,
+        # Return hidden states from target model if the draft model is an
+        # mlp_speculator
+        speculative_config = self.speculative_config
+        model_config = self.model_config
+        speculative_args = {} if speculative_config is None \
+            or (speculative_config.draft_model_config.model ==
+                model_config.model) \
+            or (speculative_config.draft_model_config.hf_config.model_type
+                not in ["medusa", "mlp_speculator", "eagle"]) \
+                    else {"return_hidden_states": True}
+
+        ModelRunnerClass: Type[HPUModelRunner] = HPUModelRunner
+        if model_runner_cls is not None:
+            ModelRunnerClass = model_runner_cls
+        else:
+            ModelRunnerClass = HPUModelRunner
+        self.model_runner: HPUModelRunner = ModelRunnerClass(
+            vllm_config=vllm_config,
             kv_cache_dtype=self.cache_config.cache_dtype,
             is_driver_worker=is_driver_worker,
-            prompt_adapter_config=prompt_adapter_config,
-            observability_config=observability_config,
-            is_encoder_decoder_model=self._is_encoder_decoder_model())
+            is_encoder_decoder_model=self._is_encoder_decoder_model(),
+            **speculative_args,
+        )
         # Uninitialized cache engine. Will be initialized by
         # initialize_cache.
         self.cache_engine: List[HPUCacheEngine]

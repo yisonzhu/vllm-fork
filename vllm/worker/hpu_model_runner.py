@@ -26,9 +26,8 @@ from vllm_hpu_extension.profiler import (HabanaHighLevelProfiler,
                                          HabanaMemoryProfiler, format_bytes)
 
 from vllm.attention import AttentionMetadata, get_attn_backend
-from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
-                         ModelConfig, ObservabilityConfig, ParallelConfig,
-                         PromptAdapterConfig, SchedulerConfig)
+from vllm.config import DeviceConfig, VllmConfig
+from vllm.distributed import broadcast_tensor_dict
 from vllm.distributed.parallel_state import get_world_group
 from vllm.logger import init_logger
 from vllm.lora.layers import LoRAMapping
@@ -73,8 +72,7 @@ class Singleton(type):
 
     def __call__(cls, *args, **kwargs):
         if cls not in cls._instances:
-            cls._instances[cls] = super(Singleton,
-                                        cls).__call__(*args, **kwargs)
+            cls._instances[cls] = super().__call__(*args, **kwargs)
         return cls._instances[cls]
 
 
@@ -97,7 +95,10 @@ def subtuple(obj: object,
     if to_override is None:
         to_override = {}
     fields = set(to_copy) | set(to_override.keys())
-    values = {f: to_override.get(f, getattr(obj, f)) for f in fields}
+    if type(obj) is dict:
+        values = {key: obj[key] for key in fields if key in obj}
+    else:
+        values = {f: to_override.get(f, getattr(obj, f)) for f in fields}
     if typename not in _TYPE_CACHE:
         _TYPE_CACHE[typename] = collections.namedtuple(typename,
                                                        ' '.join(fields))
@@ -278,7 +279,7 @@ def precompute_indices_and_offsets(block_size, slot_mapping, is_prompt):
     return indices, offsets
 
 
-class HpuModelAdapter():
+class HpuModelAdapter:
 
     def __init__(self, model, block_size, dtype, enforce_eager, is_encoder_decoder_model):
         self.model = model
@@ -411,6 +412,15 @@ class HpuModelAdapter():
 
     def sample(self, *args, **kwargs):
         return self.model.sample(*args, **kwargs)
+
+    def generate_proposals(self, *args, **kwargs):
+        return self.model.generate_proposals(*args, **kwargs)
+
+    # sampler property will be used by spec_decode_worker
+    # don't rename
+    @property
+    def sampler(self):
+        return self.model.sampler
 
 
 class PreparePromptMetadata(NamedTuple):
@@ -575,40 +585,24 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
 
     def __init__(
         self,
-        model_config: ModelConfig,
-        parallel_config: ParallelConfig,
-        scheduler_config: SchedulerConfig,
-        device_config: DeviceConfig,
-        cache_config: CacheConfig,
-        load_config: LoadConfig,
-        lora_config: Optional[LoRAConfig],
+        vllm_config: VllmConfig,
         kv_cache_dtype: Optional[str] = "auto",
         is_driver_worker: bool = False,
-        prompt_adapter_config: Optional[PromptAdapterConfig] = None,
         return_hidden_states: bool = False,
-        observability_config: Optional[ObservabilityConfig] = None,
-        is_encoder_decoder_model: bool = False
+        is_encoder_decoder_model: bool = False,
     ):
-        self.model_config = model_config
-        self.parallel_config = parallel_config
-        self.scheduler_config = scheduler_config
-        self.device_config = device_config
-        self.cache_config = cache_config
-        self.lora_config = lora_config
-        self.load_config = load_config
+        ModelRunnerBase.__init__(self, vllm_config=vllm_config)
         self.is_driver_worker = is_driver_worker
-        self.prompt_adapter_config = prompt_adapter_config
         self.return_hidden_states = return_hidden_states
-        self.observability_config = observability_config
 
         self.is_encoder_decoder_model = is_encoder_decoder_model
-        self.sliding_window = (model_config.get_sliding_window()
-                               if model_config is not None else None)
-        self.device_config = (device_config
-                              if device_config is not None else DeviceConfig())
+        self.sliding_window = (self.model_config.get_sliding_window()
+                               if self.model_config is not None else None)
+        self.device_config = (self.device_config if self.device_config
+                              is not None else DeviceConfig())
         if is_fake_hpu():
-            device_config.device = torch.device('cpu')
-            device_config.device_type = 'cpu'
+            self.device_config.device = torch.device('cpu')
+            self.device_config.device_type = 'cpu'
         self.device = self.device_config.device
         self.enforce_eager = self.model_config.enforce_eager
         self.max_num_seqs = self.scheduler_config.max_num_seqs
@@ -618,19 +612,22 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         self.max_model_len = self.scheduler_config.max_model_len
         self.max_num_batched_tokens = \
             self.scheduler_config.max_num_batched_tokens
-        self.block_size = cache_config.block_size
+        self.block_size = self.cache_config.block_size
 
         self.pin_memory = is_pin_memory_available()
-        self.kv_cache_dtype = kv_cache_dtype
+        self.kv_cache_dtype = self.cache_config.cache_dtype
 
+        num_attn_heads = self.model_config.get_num_attention_heads(
+            self.parallel_config)
+        needs_attn_backend = (num_attn_heads != 0
+                              or self.model_config.is_attention_free)
         self.attn_backend = get_attn_backend(
             self.model_config.get_head_size(),
-            self.model_config.get_sliding_window(),
             self.model_config.dtype,
             self.kv_cache_dtype,
             self.block_size,
             self.model_config.is_attention_free,
-        )
+        ) if needs_attn_backend else None
 
         # Multi-modal data support
         self.mm_registry = MULTIMODAL_REGISTRY
@@ -689,13 +686,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             htcore.hpu_set_env()
         with HabanaMemoryProfiler() as m:
             with HabanaMemoryProfiler() as m_getmodel:
-                self.model = get_model(model_config=self.model_config,
-                                       device_config=self.device_config,
-                                       load_config=self.load_config,
-                                       lora_config=self.lora_config,
-                                       parallel_config=self.parallel_config,
-                                       scheduler_config=self.scheduler_config,
-                                       cache_config=self.cache_config)
+                self.model = get_model(vllm_config=self.vllm_config)
             msg = ("Pre-loading model weights on "
                    f"{next(self.model.parameters()).device} "
                    f"took {m_getmodel.get_summary_string()}")
@@ -1021,6 +1012,8 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             num_prefill_tokens=num_prefill_tokens,
             num_decode_tokens=0,
             slot_mapping=slot_mapping,
+            multi_modal_placeholder_index_maps=
+            None  # FIXME(kzawora): mutli-modality will not work here
         )
         multi_modal_kwargs = MultiModalInputs.batch(multi_modal_inputs_list)
         for t in multi_modal_kwargs:
@@ -1232,7 +1225,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             num_prefill_tokens=0,
             num_decode_tokens=num_decode_tokens,
             slot_mapping=slot_mapping,
-        )
+            multi_modal_placeholder_index_maps=None)
         return PrepareDecodeMetadata(input_tokens=input_tokens,
                                      input_positions=input_positions,
                                      attn_metadata=attn_metadata,
@@ -1948,7 +1941,7 @@ def _maybe_wrap_in_hpu_graph(*args, **kwargs):
     ) if htorch.utils.internal.is_lazy() else HpuModelAdapter(*args, **kwargs)
 
 
-class HabanaProfilerCounterHelper():
+class HabanaProfilerCounterHelper:
 
     def __init__(self):
         self.niter = 0
@@ -2191,13 +2184,16 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         intermediate_tensors: Optional[IntermediateTensors] = None,
         num_steps: int = 1,
         warmup_mode=False,
+        previous_hidden_states: Optional[torch.Tensor] = None,
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
         if not model_input.is_first_multi_step:
             if not model_input.is_last_step:
                 # not first or last multi-step
                 return []
             # last multi-step
-            output = self._decode_sampler_outputs(model_input)
+            output = self._decode_sampler_outputs(
+                model_input) if self.is_driver_worker else []
+            torch.hpu.synchronize()
         if model_input.is_first_multi_step:
             # first multi-step
             if self.lora_config:
@@ -2239,6 +2235,9 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 "lora_mask": lora_mask,
                 **(model_input.multi_modal_kwargs or {}),
             }
+            if previous_hidden_states is not None:
+                execute_model_kwargs.update(
+                    {"previous_hidden_states": previous_hidden_states})
             if htorch.utils.internal.is_lazy():
                 execute_model_kwargs.update(
                     {"bypass_hpu_graphs": not use_graphs})
@@ -2257,7 +2256,34 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 # we only want to pythonize in the last step
                 sampling_metadata.skip_sampler_cpu_output = True
                 self.model.model.sampler.include_gpu_probs_tensor = True
+            cache_orig_output_tokens_len: List[Dict] = []
+
+            def try_revert_dummy_output_tokens():
+                if len(cache_orig_output_tokens_len) > 0:
+                    # Reuse the original output token ids length
+                    for i, seq_group_metadata in enumerate(
+                            seq_group_metadata_list):
+                        for j, data in seq_group_metadata.seq_data.items():
+                            orig_output_tokens_len = \
+                                cache_orig_output_tokens_len[i][j]
+                            data.output_token_ids = \
+                                data.output_token_ids[:orig_output_tokens_len]
+
             for i in range(num_steps):
+                if i != 0 and not self.is_driver_worker:
+                    broadcast_data = broadcast_tensor_dict(src=0)
+                    if 'early_exit' in broadcast_data and broadcast_data[
+                            'early_exit']:
+                        return [output] if num_steps == 1 else []
+                    execute_model_kwargs.update({
+                        "input_ids":
+                        broadcast_data["input_ids"],
+                        "positions":
+                        broadcast_data["positions"],
+                        "attn_metadata":
+                        self.trim_attn_metadata(
+                            broadcast_data["attn_metadata"])
+                    })
                 with self.profiler.record_event('internal', model_event_name):
                     hidden_states = self.model.forward(
                         **execute_model_kwargs,
@@ -2283,7 +2309,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 htorch.core.mark_step()
                 # Only perform sampling in the driver worker.
                 if not self.is_driver_worker:
-                    return []
+                    continue
 
                 if model_input.async_callback is not None:
                     model_input.async_callback()
@@ -2299,28 +2325,37 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     )
                     if num_steps > 1:
                         output = output.sampled_token_ids
-                        self.cached_step_outputs.append(output)
+                        self.cached_step_outputs.append(
+                            output.detach().clone())
                 htorch.core.mark_step()
                 if i < num_steps - 1:
                     if i == 0:
-                        import copy
                         ctx = model_input.async_callback.keywords[  # type: ignore
                             "ctx"]
                         seq_group_metadata_list = ctx.seq_group_metadata_list
-                        seq_group_metadata_list = copy.deepcopy(
-                            seq_group_metadata_list)
+                        # Cache the original output token ids
+                        for i, seq_group_metadata in enumerate(
+                                seq_group_metadata_list):
+                            cache_orig_output_tokens_len.append({})
+                            for j, data in seq_group_metadata.seq_data.items():
+                                cache_orig_output_tokens_len[i][j] = \
+                                    len(data.output_token_ids)
                     for seq_group_metadata in seq_group_metadata_list:
                         for data in seq_group_metadata.seq_data.values():
                             max_output_len = sampling_metadata.seq_groups[
                                 0].sampling_params.max_tokens
                             if len(data.output_token_ids) < max_output_len - 1:
+                                # add a place holder for prepare_decode
                                 # arbitrary value, this could be any token
                                 dummy_token = (540, )
                                 data.output_token_ids += (dummy_token)
                             else:
+                                broadcast_tensor_dict({'early_exit': True},
+                                                      src=0)
                                 if num_steps == 1:
                                     return [output]
                                 else:
+                                    try_revert_dummy_output_tokens()
                                     return []
 
                     result = self._prepare_decode(seq_group_metadata_list,
@@ -2333,6 +2368,14 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         "attn_metadata":
                         self.trim_attn_metadata(result.attn_metadata)
                     })
+                    model_kwargs_broadcast_data = {
+                        "input_ids": result.input_tokens,
+                        "positions": result.input_positions,
+                        "attn_metadata": vars(result.attn_metadata)
+                    }
+                    broadcast_tensor_dict(model_kwargs_broadcast_data, src=0)
+                else:
+                    try_revert_dummy_output_tokens()
 
             if self.is_driver_worker and self.profiler.enabled:
                 # Stop recording 'execute_model' event
@@ -2347,9 +2390,16 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     is_prompt=is_prompt)
                 self.profiler.record_counter(self.event_start, counters)
             if num_steps == 1:
-                return [output]
+                if self.return_hidden_states:
+                    # we only need to pass hidden states of most recent token
+                    assert model_input.sampling_metadata is not None
+                    if model_input.is_prompt:
+                        output.prefill_hidden_states = hidden_states
+                    output.hidden_states = hidden_states
+                return [output] if self.is_driver_worker else []
             else:
                 return []
+
         return output if type(output) is list else [output]
 
     def _decode_sampler_outputs(self, model_input):

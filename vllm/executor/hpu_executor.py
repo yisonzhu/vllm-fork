@@ -37,16 +37,10 @@ class HPUExecutor(ExecutorBase):
             distributed_init_method = get_distributed_init_method(
                 get_ip(), get_open_port())
         return dict(
-            model_config=self.model_config,
-            parallel_config=self.parallel_config,
-            scheduler_config=self.scheduler_config,
-            device_config=self.device_config,
-            cache_config=self.cache_config,
-            load_config=self.load_config,
+            vllm_config=self.vllm_config,
             local_rank=local_rank,
             rank=rank,
             distributed_init_method=distributed_init_method,
-            lora_config=self.lora_config,
             is_driver_worker=rank == 0,
         )
 
@@ -57,6 +51,9 @@ class HPUExecutor(ExecutorBase):
         if self.scheduler_config.is_multi_step:
             module_name = "vllm.worker.multi_step_hpu_worker"
             class_name = "MultiStepHPUWorker"
+        elif self.speculative_config is not None:
+            module_name = "vllm.spec_decode.spec_decode_worker"
+            class_name = "create_spec_worker"
         else:
             module_name = "vllm.worker.hpu_worker"
             class_name = "HPUWorker"
@@ -204,7 +201,8 @@ class HPUExecutor(ExecutorBase):
         self.driver_worker.stop_profile()
 
     def shutdown(self) -> None:
-        self.driver_worker.shutdown_inc()
+        if hasattr(self.driver_worker, 'shutdown_inc'):
+            self.driver_worker.shutdown_inc()
 
 
 class HPUExecutorAsync(HPUExecutor, ExecutorAsyncBase):

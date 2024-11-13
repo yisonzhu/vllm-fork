@@ -1,5 +1,4 @@
 import importlib.util
-import io
 import logging
 import os
 import re
@@ -157,6 +156,14 @@ class cmake_build_ext(build_ext):
         # on subsequent calls to python.
         cmake_args += ['-DVLLM_PYTHON_PATH={}'.format(":".join(sys.path))]
 
+        # Override the base directory for FetchContent downloads to $ROOT/.deps
+        # This allows sharing dependencies between profiles,
+        # and plays more nicely with sccache.
+        # To override this, set the FETCHCONTENT_BASE_DIR environment variable.
+        fc_base_dir = os.path.join(ROOT_DIR, ".deps")
+        fc_base_dir = os.environ.get("FETCHCONTENT_BASE_DIR", fc_base_dir)
+        cmake_args += ['-DFETCHCONTENT_BASE_DIR={}'.format(fc_base_dir)]
+
         #
         # Setup parallelism and build tool
         #
@@ -308,11 +315,6 @@ def _build_custom_ops() -> bool:
     return _is_cuda() or _is_hip() or _is_cpu()
 
 
-def _build_core_ext() -> bool:
-    return not (_is_neuron() or _is_tpu() or _is_openvino() or _is_xpu()
-                or _is_hpu())
-
-
 def get_hipcc_rocm_version():
     # Run the hipcc --version command
     result = subprocess.run(['hipcc', '--version'],
@@ -342,7 +344,7 @@ def get_neuronxcc_version():
                                 "__init__.py")
 
     # Check if the command was executed successfully
-    with open(version_file, "rt") as fp:
+    with open(version_file) as fp:
         content = fp.read()
 
     # Extract the version using a regular expression
@@ -380,8 +382,7 @@ def get_gaudi_sw_version():
     output = subprocess.run("hl-smi",
                             shell=True,
                             text=True,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
+                            capture_output=True,
                             env={"ENABLE_CONSOLE": "true"})
     if output.returncode == 0 and output.stdout:
         return output.stdout.split("\n")[2].replace(
@@ -417,7 +418,7 @@ def get_vllm_version() -> str:
         neuron_version = str(get_neuronxcc_version())
         if neuron_version != MAIN_CUDA_VERSION:
             neuron_version_str = neuron_version.replace(".", "")[:3]
-            version += f"+neuron{neuron_version_str}"
+            version += f"{sep}neuron{neuron_version_str}"
     elif _is_hpu():
         # Get the Intel Gaudi Software Suite version
         gaudi_sw_version = str(get_gaudi_sw_version())
@@ -442,7 +443,8 @@ def read_readme() -> str:
     """Read the README file if present."""
     p = get_path("README.md")
     if os.path.isfile(p):
-        return io.open(get_path("README.md"), "r", encoding="utf-8").read()
+        with open(get_path("README.md"), encoding="utf-8") as f:
+            return f.read()
     else:
         return ""
 
@@ -500,9 +502,6 @@ def get_requirements() -> List[str]:
 
 ext_modules = []
 
-if _build_core_ext():
-    ext_modules.append(CMakeExtension(name="vllm._core_C"))
-
 if _is_cuda() or _is_hip():
     ext_modules.append(CMakeExtension(name="vllm._moe_C"))
 
@@ -541,7 +540,6 @@ setup(
         "Documentation": "https://vllm.readthedocs.io/en/latest/",
     },
     classifiers=[
-        "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
@@ -555,7 +553,7 @@ setup(
     ],
     packages=find_packages(exclude=("benchmarks", "csrc", "docs", "examples",
                                     "tests*")),
-    python_requires=">=3.8",
+    python_requires=">=3.9",
     install_requires=get_requirements(),
     ext_modules=ext_modules,
     extras_require={
