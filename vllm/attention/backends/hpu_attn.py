@@ -207,8 +207,6 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
 
         if attn_type == AttentionType.ENCODER_DECODER:
             # Update cross-attention KV cache (prefill-only)
-            # During cross-attention decode, key & value will be None,
-            # preventing this IF-statement branch from running
             block_indices = attn_metadata.cross_block_indices
             block_offsets = attn_metadata.cross_block_offsets
         else:
@@ -216,8 +214,6 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
             block_indices = attn_metadata.block_indices
             block_offsets = attn_metadata.block_offsets
         if attn_type == AttentionType.DECODER and attn_metadata.is_prompt:
-            print("key size:", key.shape)
-            print("block_indices size:", block_indices.shape)
             key = key.unflatten(0, (block_indices.size(0), -1))
             value = value.unflatten(0, (block_indices.size(0), -1))
         if kv_cache is not None:
@@ -228,6 +224,7 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
             # If kv_cache is not provided, the new key and value tensors are
             # not cached. This happens during the initial memory profiling run.
             if (key is not None) and (value is not None):
+                # During cross-attention decode, key & value will be None, we don't need to cache them.
                 key_cache = self.k_cache(key, key_cache, block_indices,
                                         block_offsets)
                 value_cache = self.v_cache(value, value_cache, block_indices,
@@ -241,8 +238,8 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
             kv_shape = (batch_size, -1, self.num_kv_heads,
                         self.head_size)
             if attn_type == AttentionType.ENCODER_DECODER:
-                # Just a workaround, to make ops.prompt_attention go into the torch ops assembly path
-                # TODO: add new prompt_attention op in vllm_hpu_extension which calls FusedSDPA with causal = False
+                # Just a workaround, to make ops.prompt_attention go into the torch ops assembly path.
+                # TODO: add new prompt_attention op in vllm_hpu_extension which calls FusedSDPA with causal = False.
                 attn_bias = torch.zeros((batch_size, 1, 1, 1),
                                             device=query.device,
                                             dtype=torch.bool)

@@ -175,22 +175,22 @@ def _run_test(
     # will hurt multiprocessing backend with fork method (the default method).
 
     # max_model_len should be greater than image_feature_size
-    # with vllm_runner(model,
-    #                  dtype=dtype,
-    #                  max_model_len=4096,
-    #                  max_num_seqs=2,
-    #                  tensor_parallel_size=tensor_parallel_size,
-    #                  distributed_executor_backend=distributed_executor_backend,
-    #                  enforce_eager=True,
-    #                  limit_mm_per_prompt={"image": _LIMIT_IMAGE_PER_PROMPT
-    #                                       }) as vllm_model:
-    #     vllm_outputs_per_image = [
-    #         vllm_model.generate_greedy_logprobs(prompts,
-    #                                             max_tokens,
-    #                                             num_logprobs=num_logprobs,
-    #                                             images=images)
-    #         for prompts, images in inputs
-    #     ]
+    with vllm_runner(model,
+                     dtype=dtype,
+                     max_model_len=4096,
+                     max_num_seqs=5,
+                     tensor_parallel_size=tensor_parallel_size,
+                     distributed_executor_backend=distributed_executor_backend,
+                     enforce_eager=True,
+                     limit_mm_per_prompt={"image": _LIMIT_IMAGE_PER_PROMPT
+                                          }) as vllm_model:
+        vllm_outputs_per_image = [
+            vllm_model.generate_greedy_logprobs(prompts,
+                                                max_tokens,
+                                                num_logprobs=num_logprobs,
+                                                images=images)
+            for prompts, images in inputs
+        ]
 
     def process(hf_inputs: BatchEncoding, **kwargs):
         return hf_inputs
@@ -208,25 +208,17 @@ def _run_test(
             for prompts, images in inputs
         ]
 
-    for outputs in hf_outputs_per_image:
-        for output0 in outputs:
-            print("len outputs:", len(outputs))
-            output_ids_0, output_str_0, logprobs_0 = output0
-            print("output_str_0:", output_str_0)
-
-    # print("hf_outputs_per_image:", hf_outputs_per_image)
-
-    # for hf_outputs, vllm_outputs in zip(hf_outputs_per_image,
-    #                                     vllm_outputs_per_image):
-    #     check_logprobs_close(
-    #         outputs_0_lst=hf_outputs,
-    #         outputs_1_lst=[
-    #             vllm_to_hf_output(vllm_output, model)
-    #             for vllm_output in vllm_outputs
-    #         ],
-    #         name_0="hf",
-    #         name_1="vllm",
-    #     )
+    for hf_outputs, vllm_outputs in zip(hf_outputs_per_image,
+                                        vllm_outputs_per_image):
+        check_logprobs_close(
+            outputs_0_lst=hf_outputs,
+            outputs_1_lst=[
+                vllm_to_hf_output(vllm_output, model)
+                for vllm_output in vllm_outputs
+            ],
+            name_0="hf",
+            name_1="vllm",
+        )
 
 
 @large_gpu_test(min_gb=48)
@@ -271,9 +263,7 @@ def test_models_single_leading_image(hf_runner, vllm_runner, image_assets,
 @pytest.mark.parametrize(
     "sizes",
     [
-        # [(512, 512), (512, 512), (512, 512)],
-        [(512, 512), (1024, 512), (1536, 512), (2048, 512), (512, 1024),
-         (1024, 1024), (512, 1536), (512, 2028)],
+        [(512, 512), (512, 512), (512, 512)],
     ])
 @pytest.mark.parametrize("dtype", ["bfloat16"])
 @pytest.mark.parametrize("max_tokens", [128])

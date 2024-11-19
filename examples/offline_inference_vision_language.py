@@ -337,7 +337,7 @@ def run_mllama(question: str, modality: str):
         model=model_name,
         max_model_len=4096,
         max_num_seqs=16,
-        # enforce_eager=True,
+        enforce_eager=True,
     )
 
     prompt = f"<|image|><|begin_of_text|>{question}"

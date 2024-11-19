@@ -1218,21 +1218,8 @@ class MllamaForConditionalGeneration(nn.Module, SupportsMultiModal):
             max_num_tiles = max(
                 max([len(x) for x in y[0]]) for y in pixel_values)
             device = next(self.multi_modal_projector.parameters()).device
-            print("device: ", device)
             bsz = len(pixel_values)
             out_num_tiles = []
-            print("bsz: ", bsz, "max_num_images: ", max_num_images, "max_num_tiles: ", max_num_tiles, "image_size: ", self.image_size)
-            print("pixel_values size: ", pixel_values)
-            test_out_images = torch.zeros(
-                bsz,
-                max_num_images,
-                max_num_tiles,
-                3,
-                self.image_size,
-                self.image_size,
-                dtype=torch.float32,
-                device=device,
-            )
             out_images = torch.zeros(
                 bsz,
                 max_num_images,
@@ -1426,7 +1413,6 @@ class MllamaForConditionalGeneration(nn.Module, SupportsMultiModal):
                     input_ids, attn_metadata, num_tiles,
                     num_tokens_per_tile, cross_attention_states.dtype)
 
-        # print("cross_attention_states shape: ", cross_attention_states.shape)
         outputs = self.language_model(
             input_ids=input_ids,
             positions=positions,
