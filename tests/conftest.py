@@ -1,6 +1,5 @@
 import json
 import os
-import copy
 import tempfile
 from collections import UserList
 from enum import Enum

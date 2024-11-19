@@ -178,7 +178,7 @@ def _run_test(
     with vllm_runner(model,
                      dtype=dtype,
                      max_model_len=4096,
-                     max_num_seqs=5,
+                     max_num_seqs=2,
                      tensor_parallel_size=tensor_parallel_size,
                      distributed_executor_backend=distributed_executor_backend,
                      enforce_eager=True,
