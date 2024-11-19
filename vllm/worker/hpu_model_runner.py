@@ -1566,21 +1566,6 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                         lora_request=None):
         sampling_params = SamplingParams(temperature=0)
         num_blocks = math.ceil(seq_len / self.block_size)
-        cross_block_table: List[int] = []
-        encoder_dummy_data = None
-        if self.is_encoder_decoder_model:
-            encoder_dummy_data \
-                = self.input_registry.dummy_data_for_profiling(
-                    self.model_config,
-                                         seq_len,
-                                         self.mm_registry,
-                                         is_encoder_data=True)
-            mm_counts = self.mm_registry.get_mm_limits_per_prompt(self.model_config)
-            num_images = mm_counts["image"]
-            max_mm_tokens = self.mm_registry.get_max_multimodal_tokens(self.model_config) * num_images
-            num_cross_blocks = math.ceil(max_mm_tokens / self.block_size)
-            cross_block_table.extend([_PAD_BLOCK_ID] * num_cross_blocks)
-
         seq_len = max(seq_len, 1)
         if is_prompt:
             input_len = seq_len
@@ -1600,9 +1585,6 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                      seq_data={group_id: seq_data},
                                      sampling_params=sampling_params,
                                      block_tables=block_tables,
-                                     encoder_seq_data=encoder_dummy_data.seq_data if encoder_dummy_data is not None else None,
-                                     multi_modal_data=encoder_dummy_data.multi_modal_data if encoder_dummy_data is not None else None,
-                                     cross_block_table=cross_block_table,
                                      lora_request=lora_request)
 
     def profile_run(self) -> None:
