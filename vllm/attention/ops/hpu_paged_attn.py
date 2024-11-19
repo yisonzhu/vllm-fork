@@ -23,6 +23,7 @@ class HPUPagedAttentionMetadata:
     block_scales: Optional[torch.Tensor]
     block_groups: Optional[torch.Tensor]
 
+
 class HPUPagedAttention:
 
     @staticmethod

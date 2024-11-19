@@ -259,17 +259,16 @@ def test_models_single_leading_image(hf_runner, vllm_runner, image_assets,
         tensor_parallel_size=1,
     )
 
+
 @pytest.mark.parametrize("model", models)
-@pytest.mark.parametrize(
-    "sizes",
-    [
-        [(512, 512), (512, 512), (512, 512)],
-    ])
+@pytest.mark.parametrize("sizes", [
+    [(512, 512), (512, 512), (512, 512)],
+])
 @pytest.mark.parametrize("dtype", ["bfloat16"])
 @pytest.mark.parametrize("max_tokens", [128])
 @pytest.mark.parametrize("num_logprobs", [5])
-def test_hpu_models(hf_hpu_runner, vllm_runner, image_assets, model, sizes, dtype,
-                max_tokens, num_logprobs) -> None:
+def test_hpu_models(hf_hpu_runner, vllm_runner, image_assets, model, sizes,
+                    dtype, max_tokens, num_logprobs) -> None:
     run_test(
         hf_hpu_runner,
         vllm_runner,
@@ -281,6 +280,7 @@ def test_hpu_models(hf_hpu_runner, vllm_runner, image_assets, model, sizes, dtyp
         num_logprobs=num_logprobs,
         tensor_parallel_size=1,
     )
+
 
 @large_gpu_test(min_gb=48)
 @pytest.mark.parametrize("model", models)

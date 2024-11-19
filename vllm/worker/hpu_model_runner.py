@@ -282,7 +282,8 @@ def precompute_indices_and_offsets(block_size, slot_mapping, is_prompt):
 
 class HpuModelAdapter:
 
-    def __init__(self, model, block_size, dtype, enforce_eager, is_encoder_decoder_model):
+    def __init__(self, model, block_size, dtype, enforce_eager,
+                 is_encoder_decoder_model):
         self.model = model
         self.prefill_use_fusedsdpa = os.getenv('VLLM_PROMPT_USE_FUSEDSDPA',
                                                '1').lower() in ['1', 'true'] \
@@ -298,7 +299,8 @@ class HpuModelAdapter:
         if is_encoder_decoder_model:
             # We only wrap the language model in HPU graph because some Ops in vision model will fallback to CPU and cause the graph building fail.
             if hasattr(self.model, "language_model"):
-                self.model.language_model = htorch.hpu.wrap_in_hpu_graph(self.model.language_model, disable_tensor_cache=True)
+                self.model.language_model = htorch.hpu.wrap_in_hpu_graph(
+                    self.model.language_model, disable_tensor_cache=True)
 
     def _set_attn_bias(self, attn_metadata, batch_size, seq_len, device,
                        dtype):
@@ -349,15 +351,17 @@ class HpuModelAdapter:
             attn_mask, -math.inf))
         if metadata.cross_block_usage is not None:
             cross_attn_mask = mask >= metadata.cross_block_usage.unsqueeze(-1)
-            cross_attn_bias = (torch.zeros_like(cross_attn_mask, dtype=dtype).masked_fill_(
-                cross_attn_mask, -math.inf))
+            cross_attn_bias = (torch.zeros_like(cross_attn_mask,
+                                                dtype=dtype).masked_fill_(
+                                                    cross_attn_mask,
+                                                    -math.inf))
 
         if not is_fake_hpu() and htorch.utils.internal.is_lazy():
             block_mapping = torch.nn.functional.one_hot(metadata.block_mapping,
                                                         num_classes=batch_size)
             if self.is_encoder_decoder_model:
-                cross_block_mapping = torch.nn.functional.one_hot(metadata.cross_block_mapping,
-                                                            num_classes=batch_size)
+                cross_block_mapping = torch.nn.functional.one_hot(
+                    metadata.cross_block_mapping, num_classes=batch_size)
         else:
             # Unfortunately one_hot on CPU/torch.compile mode/eager mode
             # doesn't handle out of bounds classes,
@@ -368,18 +372,21 @@ class HpuModelAdapter:
             oob_values = metadata.block_mapping.lt(0)
             block_mapping.masked_fill_(oob_values.unsqueeze(-1), 0)
             if self.is_encoder_decoder_model:
-                cross_block_mapping = torch.nn.functional.relu(metadata.cross_block_mapping)
-                cross_block_mapping = torch.nn.functional.one_hot(cross_block_mapping,
-                                                            num_classes=batch_size)
+                cross_block_mapping = torch.nn.functional.relu(
+                    metadata.cross_block_mapping)
+                cross_block_mapping = torch.nn.functional.one_hot(
+                    cross_block_mapping, num_classes=batch_size)
                 cross_oob_values = metadata.cross_block_mapping.lt(0)
-                cross_block_mapping.masked_fill_(cross_oob_values.unsqueeze(-1), 0)
+                cross_block_mapping.masked_fill_(
+                    cross_oob_values.unsqueeze(-1), 0)
         block_mapping = block_mapping.to(dtype)
         metadata = metadata._replace(block_mapping=block_mapping,
                                      attn_bias=attn_bias)
         if self.is_encoder_decoder_model:
             cross_block_mapping = cross_block_mapping.to(dtype)
-            metadata = metadata._replace(cross_block_mapping=cross_block_mapping,
-                                         cross_attn_bias=cross_attn_bias)
+            metadata = metadata._replace(
+                cross_block_mapping=cross_block_mapping,
+                cross_attn_bias=cross_attn_bias)
         return metadata
 
     def _update_metadata(self, attn_metadata, batch_size, seq_len, device,
@@ -1245,16 +1252,17 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                      slot_mapping=slot_mapping,
                                      lora_ids=lora_ids)
 
-    def _prepare_encoder_model_input_tensors(self, 
-        seq_group_metadata_list: List[SequenceGroupMetadata], 
+    def _prepare_encoder_model_input_tensors(
+        self,
+        seq_group_metadata_list: List[SequenceGroupMetadata],
         model_input: ModelInputForHPUWithSamplingMetadata,
     ):
+
         def _list_to_int32_tensor(
             _list: List[int],
             device,
         ) -> torch.Tensor:
             return torch.tensor(_list, dtype=torch.int32, device=device)
-
 
         if len(seq_group_metadata_list) == 0:
             return None, None
@@ -1272,7 +1280,8 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         if is_prompt:
             for seq_group_metadata in seq_group_metadata_list:
                 # Build seq lens
-                seq_len = seq_group_metadata.encoder_seq_data.get_len() if seq_group_metadata.encoder_seq_data else 0
+                seq_len = seq_group_metadata.encoder_seq_data.get_len(
+                ) if seq_group_metadata.encoder_seq_data else 0
                 encoder_seq_lens.append(seq_len)
                 # Build slot mapping
                 if seq_group_metadata.cross_block_table is None:
@@ -1285,8 +1294,8 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                         slot = block_number * self.block_size + block_offset
                         cross_slot_mapping.append(slot)
             cross_slot_mapping_tensor = torch.tensor(cross_slot_mapping,
-                                                    dtype=torch.long,
-                                                    device=self.device)
+                                                     dtype=torch.long,
+                                                     device=self.device)
 
             cross_block_indices, cross_block_offsets = precompute_indices_and_offsets(
                 self.block_size, cross_slot_mapping_tensor, False)
@@ -1295,7 +1304,8 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         else:
             for seq_group_metadata in seq_group_metadata_list:
                 for _ in range(len(seq_group_metadata.seq_data)):
-                    seq_len = seq_group_metadata.encoder_seq_data.get_len() if seq_group_metadata.encoder_seq_data else 0
+                    seq_len = seq_group_metadata.encoder_seq_data.get_len(
+                    ) if seq_group_metadata.encoder_seq_data else 0
                     encoder_seq_lens.append(seq_len)
                     cross_block_table = seq_group_metadata.cross_block_table
                     cross_block_tables.append([] if (
@@ -1316,32 +1326,31 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             block_mapping: List[int] = list(
                 itertools.chain.from_iterable(block_mapping_nested))
             block_list = torch.tensor(block_list,
-                                    dtype=torch.int,
-                                    device=self.device)
+                                      dtype=torch.int,
+                                      device=self.device)
             block_mapping = torch.tensor(block_mapping,
-                                        dtype=torch.long,
-                                        device=self.device)
+                                         dtype=torch.long,
+                                         device=self.device)
             block_scales = torch.tensor(block_scales,
                                         dtype=self.model_config.dtype,
                                         device=self.device)
-            last_block = [
-                (seq_len - 1) % self.block_size + 1
-                for seq_len in encoder_seq_lens
-            ]
+            last_block = [(seq_len - 1) % self.block_size + 1
+                          for seq_len in encoder_seq_lens]
             block_usage_ = [[self.block_size] * (b_u - 1) + [lb]
                             for b_u, lb in zip(blocks_used, last_block)]
             block_usage = list(itertools.chain(*block_usage_))
             block_usage = torch.tensor(block_usage,
-                                   dtype=self.model_config.dtype,
-                                   device=self.device)
-            
+                                       dtype=self.model_config.dtype,
+                                       device=self.device)
+
             attn_metadata.cross_block_list = block_list
             attn_metadata.cross_block_mapping = block_mapping
             attn_metadata.cross_block_groups = block_mapping
             attn_metadata.cross_block_scales = block_scales
             attn_metadata.cross_block_usage = block_usage
 
-        encoder_seq_lens_tensor = _list_to_int32_tensor(encoder_seq_lens, self.device)
+        encoder_seq_lens_tensor = _list_to_int32_tensor(
+            encoder_seq_lens, self.device)
         encoder_seq_start_loc = torch.zeros(encoder_seq_lens_tensor.shape[0] +
                                             1,
                                             dtype=torch.int32,
@@ -1352,7 +1361,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                      out=encoder_seq_start_loc[1:])
         attn_metadata.encoder_seq_lens = encoder_seq_lens
         attn_metadata.encoder_seq_lens_tensor = encoder_seq_lens_tensor
-        
+
         return attn_metadata
 
     def prepare_input_tensors(
@@ -1548,13 +1557,32 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         # input_hash(123) != input_hash(321)
         # input_hash("abc") != input_hash("cba")
         attention_metadata = subtuple(metadata, 'TrimmedAttentionMetadata', [
-            'attn_bias', 'seq_lens_tensor', 'context_lens_tensor',
-            'block_list', 'block_mapping', 'block_usage', 'slot_mapping',
-            'is_prompt', 'block_indices', 'block_offsets', 'block_scales',
-            'block_groups', 'num_prefill_tokens', 'num_decode_tokens', 'num_prefills',
-            'seq_lens', 'encoder_seq_lens', 'encoder_seq_lens_tensor', 'cross_block_indices',
-            'cross_block_offsets', 'cross_block_list', 'cross_block_mapping',
-            'cross_block_groups', 'cross_block_scales', 'cross_block_usage', 'cross_attn_bias',
+            'attn_bias',
+            'seq_lens_tensor',
+            'context_lens_tensor',
+            'block_list',
+            'block_mapping',
+            'block_usage',
+            'slot_mapping',
+            'is_prompt',
+            'block_indices',
+            'block_offsets',
+            'block_scales',
+            'block_groups',
+            'num_prefill_tokens',
+            'num_decode_tokens',
+            'num_prefills',
+            'seq_lens',
+            'encoder_seq_lens',
+            'encoder_seq_lens_tensor',
+            'cross_block_indices',
+            'cross_block_offsets',
+            'cross_block_list',
+            'cross_block_mapping',
+            'cross_block_groups',
+            'cross_block_scales',
+            'cross_block_usage',
+            'cross_attn_bias',
         ])
         return attention_metadata
 
@@ -1952,10 +1980,10 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
 def _maybe_wrap_in_hpu_graph(*args, **kwargs):
     is_encoder_decoder_model = kwargs.get("is_encoder_decoder_model", False)
     if htorch.utils.internal.is_lazy() and not is_encoder_decoder_model:
-        return htorch.hpu.wrap_in_hpu_graph(
-            HpuModelAdapter(*args, **kwargs), disable_tensor_cache=True
-        )
+        return htorch.hpu.wrap_in_hpu_graph(HpuModelAdapter(*args, **kwargs),
+                                            disable_tensor_cache=True)
     return HpuModelAdapter(*args, **kwargs)
+
 
 class HabanaProfilerCounterHelper:
 
@@ -2096,7 +2124,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             model_input, sampling_metadata = self.prepare_input_tensors(
                 seq_group_metadata_list)
             if self.is_encoder_decoder_model:
-                attn_metadata = self._prepare_encoder_model_input_tensors(seq_group_metadata_list, model_input)
+                attn_metadata = self._prepare_encoder_model_input_tensors(
+                    seq_group_metadata_list, model_input)
                 model_input = dataclasses.replace(
                     model_input,
                     attn_metadata=attn_metadata,

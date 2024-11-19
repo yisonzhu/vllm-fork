@@ -67,6 +67,7 @@ is_hpu = current_platform.is_hpu()
 if is_hpu:
     import habana_frameworks.torch as htorch
 
+
 class MllamaImagePixelInputs(TypedDict):
     type: Literal["pixel_values"]
     data: torch.Tensor
@@ -934,7 +935,8 @@ class MllamaCrossAttentionDecoderLayer(torch.nn.Module):
         # the rank of full_text_row_masked_out_mask is 2, not match with the hidden_states, so expand its rank to 3.
         # TODO: Change input_tokens tensor at the beginning of model execution to 2D tensor to align with public vllm input_tokens shape.
         #       But this may face the graph building failure issue, still need to investigate.
-        full_text_row_masked_out_mask = full_text_row_masked_out_mask.view(hidden_states.size(0), -1, 1)
+        full_text_row_masked_out_mask = full_text_row_masked_out_mask.view(
+            hidden_states.size(0), -1, 1)
         hidden_states = full_text_row_masked_out_mask * hidden_states
         hidden_states = residual + self.cross_attn_attn_gate.tanh(
         ) * hidden_states

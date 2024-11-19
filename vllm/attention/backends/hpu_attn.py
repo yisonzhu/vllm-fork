@@ -193,8 +193,8 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
                 seq_len_kv = batched_kv_tokens // batch_size
             else:
                 raise NotImplementedError("Encoder self-attention "
-                                        "is not implemented for "
-                                        "HPUAttentionImpl")
+                                          "is not implemented for "
+                                          "HPUAttentionImpl")
 
         hidden_size = self.num_heads * self.head_size
         query = query.view(-1, self.num_heads, self.head_size)
@@ -226,23 +226,22 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
             if (key is not None) and (value is not None):
                 # During cross-attention decode, key & value will be None, we don't need to cache them.
                 key_cache = self.k_cache(key, key_cache, block_indices,
-                                        block_offsets)
+                                         block_offsets)
                 value_cache = self.v_cache(value, value_cache, block_indices,
-                                        block_offsets)
+                                           block_offsets)
 
         if attn_metadata.is_prompt:
             # Prompt run.
             batch_size = attn_metadata.num_prefills
-            
+
             query_shape = (batch_size, -1, self.num_heads, self.head_size)
-            kv_shape = (batch_size, -1, self.num_kv_heads,
-                        self.head_size)
+            kv_shape = (batch_size, -1, self.num_kv_heads, self.head_size)
             if attn_type == AttentionType.ENCODER_DECODER:
                 # Just a workaround, to make ops.prompt_attention go into the torch ops assembly path.
                 # TODO: add new prompt_attention op in vllm_hpu_extension which calls FusedSDPA with causal = False.
                 attn_bias = torch.zeros((batch_size, 1, 1, 1),
-                                            device=query.device,
-                                            dtype=torch.bool)
+                                        device=query.device,
+                                        dtype=torch.bool)
                 out = ops.prompt_attention(
                     query.view(query_shape),
                     key.view(kv_shape),
