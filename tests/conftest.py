@@ -1,5 +1,6 @@
 import json
 import os
+import copy
 import tempfile
 from collections import UserList
 from enum import Enum
@@ -620,12 +621,23 @@ class HfHPURunner(HfRunner):
 
     def wrap_device(self, input: _T, device: Optional[str] = None) -> _T:
         if device is None:
-            return self.wrap_device(input, "cpu" if is_cpu() else "hpu")
+            return self.wrap_device(input, "cpu" if current_platform.is_cpu() else "hpu")
 
         if hasattr(input, "device") and input.device.type == device:
             return input
 
         return input.to(device)
+
+    def setup_env(self):
+        os.environ.setdefault("PT_HPUGRAPH_DISABLE_TENSOR_CACHE", "1")
+        os.environ.setdefault("use_fused_rope", "1")
+        os.environ.setdefault("use_fused_rms_norm", "1")
+        os.environ.setdefault("use_flash_attention_in_vision", "1")
+        os.environ.setdefault("VISION_ATTN_USE_SDPA", "1")
+        os.environ.setdefault("CROSS_SELF_ATTN_USE_SDPA", "1")
+        os.environ.setdefault("TEXT_SELF_ATTN_USE_SDPA", "1")
+        os.environ.setdefault("use_flash_attention", "1")
+        os.environ.setdefault("flash_attention_recompute", "1")
 
     def __init__(
         self,
@@ -641,6 +653,11 @@ class HfHPURunner(HfRunner):
         torch_dtype = STR_DTYPE_TO_TORCH_DTYPE[dtype]
 
         self.model_name = model_name
+
+        # self.setup_env()
+
+        # from optimum.habana.transformers.modeling_utils import adapt_transformers_to_gaudi
+        # adapt_transformers_to_gaudi()
 
         model_kwargs = model_kwargs if model_kwargs is not None else {}
         self.model = self.wrap_device(
@@ -662,6 +679,8 @@ class HfHPURunner(HfRunner):
         if not wrap_done:
             self.model = wrap_in_hpu_graph(self.model)
 
+        self.generation_config = self.setup_generation_config(self.model)
+
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_name,
             torch_dtype=torch_dtype,
@@ -676,8 +695,82 @@ class HfHPURunner(HfRunner):
             torch_dtype=torch_dtype,
             trust_remote_code=True,
         )
-
+        self.dtype = dtype
         self.postprocess_inputs = postprocess_inputs
+
+    def setup_generation_config(self, model):
+        generation_config = copy.deepcopy(model.generation_config)
+        generation_config.use_cache = True
+        generation_config.static_shapes = True
+        generation_config.trim_logits = True
+        generation_config.bucket_size = 512
+        generation_config.bucket_internal = True
+        generation_config.use_flash_attention = True
+        generation_config.flash_attention_recompute = True
+        generation_config.flash_attention_causal_mask = True
+        generation_config.flash_attention_fast_softmax = False
+
+        return generation_config
+
+    def generate_greedy_logprobs_limit(
+        self,
+        prompts: List[str],
+        max_tokens: int,
+        num_logprobs: int,
+        images: Optional[PromptImageInput] = None,
+        audios: Optional[PromptAudioInput] = None,
+        videos: Optional[List[np.ndarray]] = None,
+        **kwargs: Any,
+    ) -> List[TokensTextLogprobs]:
+        all_logprobs: List[List[Dict[int, float]]] = []
+        all_output_ids: List[List[int]] = []
+        all_output_strs: List[str] = []
+
+        for i, prompt in enumerate(prompts):
+            processor_kwargs: Dict[str, Any] = {
+                "text": prompt,
+                "return_tensors": "pt",
+            }
+            if images is not None and images[i] is not None:
+                processor_kwargs["images"] = images[i]
+
+            if audios is not None:
+                audio, sr = audios[i]
+                processor_kwargs["audio"] = audio
+                processor_kwargs["sampling_rate"] = sr
+
+            if videos is not None:
+                processor_kwargs["videos"] = videos[i]
+            inputs = self.processor(**processor_kwargs)
+            inputs = self.postprocess_inputs(inputs)
+
+            output = self.model.generate(
+                **self.wrap_device(inputs, device=self.model.device.type),
+                # generation_config=self.generation_config,
+                use_cache=True,
+                do_sample=False,
+                max_new_tokens=max_tokens,
+                output_hidden_states=True,
+                return_dict_in_generate=True,
+                **kwargs,
+            )
+
+            (
+                seq_logprobs_lst,
+                output_len,
+            ) = self._hidden_states_to_logprobs(output.hidden_states,
+                                                num_logprobs)
+
+            all_logprobs.append(seq_logprobs_lst)
+            seq_ids = output.sequences[0]
+            output_len = len(seq_logprobs_lst)
+            output_ids = seq_ids[-output_len:]
+            all_output_ids.append(output_ids.tolist())
+            all_output_strs.append(self.tokenizer.decode(output_ids))
+
+        outputs = zip(all_output_ids, all_output_strs, all_logprobs)
+        return [(output_ids, output_str, output_logprobs)
+                for output_ids, output_str, output_logprobs in outputs]
 
 
 @pytest.fixture(scope="session")

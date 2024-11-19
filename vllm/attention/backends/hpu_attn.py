@@ -74,6 +74,7 @@ class HPUAttentionMetadata(HPUPagedAttentionMetadata, AttentionMetadata):
     attn_bias: Optional[torch.Tensor]
     seq_lens_tensor: Optional[torch.Tensor]
     context_lens_tensor: Optional[torch.Tensor]
+    seq_lens: Optional[List[int]] = None
     encoder_seq_lens: Optional[List[int]] = None
     encoder_seq_lens_tensor: Optional[torch.Tensor] = None
     cross_block_indices: Optional[torch.Tensor] = None
@@ -204,25 +205,24 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
         else:
             assert value is None
 
-        block_indices = attn_metadata.block_indices
-        block_offsets = attn_metadata.block_offsets
-        if attn_metadata.is_prompt:
+        if attn_type == AttentionType.ENCODER_DECODER:
+            # Update cross-attention KV cache (prefill-only)
+            # During cross-attention decode, key & value will be None,
+            # preventing this IF-statement branch from running
+            block_indices = attn_metadata.cross_block_indices
+            block_offsets = attn_metadata.cross_block_offsets
+        else:
+            # Update self-attention KV cache (prefill/decode)
+            block_indices = attn_metadata.block_indices
+            block_offsets = attn_metadata.block_offsets
+        if attn_type == AttentionType.DECODER and attn_metadata.is_prompt:
+            print("key size:", key.shape)
+            print("block_indices size:", block_indices.shape)
             key = key.unflatten(0, (block_indices.size(0), -1))
             value = value.unflatten(0, (block_indices.size(0), -1))
         if kv_cache is not None:
             key_cache, value_cache = HPUPagedAttention.split_kv_cache(
                 kv_cache, self.num_kv_heads, self.head_size)
-
-            if attn_type == AttentionType.ENCODER_DECODER:
-                # Update cross-attention KV cache (prefill-only)
-                # During cross-attention decode, key & value will be None,
-                # preventing this IF-statement branch from running
-                block_indices = attn_metadata.cross_block_indices
-                block_offsets = attn_metadata.cross_block_offsets
-            else:
-                # Update self-attention KV cache (prefill/decode)
-                block_indices = attn_metadata.block_indices
-                block_offsets = attn_metadata.block_offsets
 
             # Reshape the input keys and values and store them in the cache.
             # If kv_cache is not provided, the new key and value tensors are

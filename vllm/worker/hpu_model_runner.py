@@ -27,6 +27,7 @@ from vllm_hpu_extension.profiler import (HabanaHighLevelProfiler,
 
 from vllm.attention import AttentionMetadata, get_attn_backend
 from vllm.config import DeviceConfig, VllmConfig
+from vllm.inputs import INPUT_REGISTRY, InputRegistry
 from vllm.distributed import broadcast_tensor_dict
 from vllm.distributed.parallel_state import get_world_group
 from vllm.logger import init_logger
@@ -39,7 +40,7 @@ from vllm.model_executor.model_loader import get_model
 from vllm.model_executor.models import supports_multimodal
 from vllm.model_executor.sampling_metadata import SequenceGroupToSample
 from vllm.multimodal import (MULTIMODAL_REGISTRY, BatchedTensorInputs,
-                             MultiModalInputs)
+                             MultiModalInputs, MultiModalRegistry)
 from vllm.sampling_params import SamplingParams
 from vllm.sequence import (CompletionSequenceGroupOutput, IntermediateTensors,
                            Logprob, SequenceData, SequenceGroupMetadata,
@@ -590,6 +591,8 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         is_driver_worker: bool = False,
         return_hidden_states: bool = False,
         is_encoder_decoder_model: bool = False,
+        input_registry: InputRegistry = INPUT_REGISTRY,
+        mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
     ):
         ModelRunnerBase.__init__(self, vllm_config=vllm_config)
         self.is_driver_worker = is_driver_worker
@@ -630,6 +633,8 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         ) if needs_attn_backend else None
 
         # Multi-modal data support
+        self.input_registry = input_registry
+        self.mm_registry = mm_registry
         self.mm_registry = MULTIMODAL_REGISTRY
         self.multi_modal_input_mapper = self.mm_registry \
             .create_input_mapper(self.model_config)
@@ -749,6 +754,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             torch.hpu.synchronize()
 
             with HabanaMemoryProfiler() as m_wrap:
+                print("htorch.utils.internal.is_lazy():", htorch.utils.internal.is_lazy())
                 self.model = _maybe_wrap_in_hpu_graph(
                     self.model,
                     self.block_size,
@@ -1006,6 +1012,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             block_scales=None,
             block_groups=None,
             attn_bias=None,
+            seq_lens=seq_lens,
             seq_lens_tensor=seq_lens_tensor,
             context_lens_tensor=context_lens_tensor,
             num_prefills=real_num_seqs,
@@ -1264,18 +1271,28 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                 # Build seq lens
                 seq_len = seq_group_metadata.encoder_seq_data.get_len() if seq_group_metadata.encoder_seq_data else 0
                 encoder_seq_lens.append(seq_len)
+                print("encoder_seq_lens:", encoder_seq_lens)
                 # Build slot mapping
-                for i in range(0, seq_len):
-                    block_number = seq_group_metadata.cross_block_table[
-                        i // self.block_size]
-                    block_offset = i % self.block_size
-                    slot = block_number * self.block_size + block_offset
-                    cross_slot_mapping.append(slot)
+                if seq_group_metadata.cross_block_table is None:
+                    cross_slot_mapping.extend([_PAD_SLOT_ID] * seq_len)
+                else:
+                    for i in range(0, seq_len):
+                        block_number = seq_group_metadata.cross_block_table[
+                            i // self.block_size]
+                        block_offset = i % self.block_size
+                        slot = block_number * self.block_size + block_offset
+                        cross_slot_mapping.append(slot)
+            # max_encoder_len = max(encoder_seq_lens)
+            # padded_encoder_len = round_up(max_encoder_len, self.block_size)
             cross_slot_mapping_tensor = torch.tensor(cross_slot_mapping,
                                                     dtype=torch.long,
                                                     device=self.device)
+            
+            print("block_size:", self.block_size)
+            print("cross_slot_mapping_tensor shape:", cross_slot_mapping_tensor.shape)
             cross_block_indices, cross_block_offsets = precompute_indices_and_offsets(
                 self.block_size, cross_slot_mapping_tensor, False)
+            print("in model runner cross_block_indices shape:", cross_block_indices.shape)
             attn_metadata.cross_block_indices = cross_block_indices
             attn_metadata.cross_block_offsets = cross_block_offsets
         else:
@@ -1538,7 +1555,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             'block_list', 'block_mapping', 'block_usage', 'slot_mapping',
             'is_prompt', 'block_indices', 'block_offsets', 'block_scales',
             'block_groups', 'num_prefill_tokens', 'num_decode_tokens', 'num_prefills',
-            'encoder_seq_lens', 'encoder_seq_lens_tensor', 'cross_block_indices',
+            'seq_lens', 'encoder_seq_lens', 'encoder_seq_lens_tensor', 'cross_block_indices',
             'cross_block_offsets', 'cross_block_list', 'cross_block_mapping',
             'cross_block_groups', 'cross_block_scales', 'cross_block_usage', 'cross_attn_bias',
         ])
@@ -1551,6 +1568,21 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                         lora_request=None):
         sampling_params = SamplingParams(temperature=0)
         num_blocks = math.ceil(seq_len / self.block_size)
+        # cross_block_table: List[int] = []
+        # encoder_dummy_data = None
+        # if self.is_encoder_decoder_model:
+        #     encoder_dummy_data \
+        #         = self.input_registry.dummy_data_for_profiling(
+        #             self.model_config,
+        #                                  seq_len,
+        #                                  self.mm_registry,
+        #                                  is_encoder_data=True)
+        #     mm_counts = self.mm_registry.get_mm_limits_per_prompt(self.model_config)
+        #     num_images = mm_counts["image"]
+        #     max_mm_tokens = self.mm_registry.get_max_multimodal_tokens(self.model_config) * num_images
+        #     num_cross_blocks = math.ceil(max_mm_tokens / self.block_size)
+        #     cross_block_table.extend([_PAD_BLOCK_ID] * num_cross_blocks)
+
         seq_len = max(seq_len, 1)
         if is_prompt:
             input_len = seq_len
@@ -1570,6 +1602,9 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                      seq_data={group_id: seq_data},
                                      sampling_params=sampling_params,
                                      block_tables=block_tables,
+                                    #  encoder_seq_data=encoder_dummy_data.seq_data if encoder_dummy_data is not None else None,
+                                    #  multi_modal_data=encoder_dummy_data.multi_modal_data if encoder_dummy_data is not None else None,
+                                    #  cross_block_table=cross_block_table,
                                      lora_request=lora_request)
 
     def profile_run(self) -> None:
