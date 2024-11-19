@@ -758,7 +758,6 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             torch.hpu.synchronize()
 
             with HabanaMemoryProfiler() as m_wrap:
-                print("htorch.utils.internal.is_lazy():", htorch.utils.internal.is_lazy())
                 self.model = _maybe_wrap_in_hpu_graph(
                     self.model,
                     self.block_size,
