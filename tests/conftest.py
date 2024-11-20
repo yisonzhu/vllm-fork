@@ -711,6 +711,7 @@ class HfHPURunner(HfRunner):
 def hf_hpu_runner():
     return HfHPURunner
 
+
 class VllmRunner:
 
     def __init__(
