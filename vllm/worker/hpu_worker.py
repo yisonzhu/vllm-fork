@@ -106,7 +106,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             self.profiler = None
 
     def _is_encoder_decoder_model(self):
-        return self.model_config.is_encoder_decoder_model
+        return self.model_config.is_encoder_decoder
 
     def start_profile(self):
         if self.profiler is None:

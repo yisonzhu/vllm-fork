@@ -21,7 +21,6 @@ import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
 import transformers.models.mllama.configuration_mllama as config_mllama
-from vllm.platforms import current_platform
 from PIL import Image
 from torch import nn
 from transformers.modeling_outputs import (BaseModelOutput,
@@ -33,8 +32,8 @@ from transformers.models.mllama.processing_mllama import (
 
 import vllm.distributed.parallel_state as ps
 from vllm.attention import Attention, AttentionMetadata, AttentionType
-from vllm.attention.backends.flash_attn import FlashAttentionMetadata
-from vllm.attention.backends.xformers import XFormersMetadata
+# from vllm.attention.backends.flash_attn import FlashAttentionMetadata
+# from vllm.attention.backends.xformers import XFormersMetadata
 from vllm.attention.ops.paged_attn import PagedAttention
 from vllm.config import VllmConfig
 from vllm.distributed import get_tensor_model_parallel_world_size
@@ -64,11 +63,6 @@ from .utils import maybe_prefix
 logger = init_logger(__name__)
 MLLAMA_IMAGE_TOKEN_ID = 128256
 MLLAMA_IMAGE_TOKEN = "<|image|>"
-
-is_hpu = current_platform.is_hpu()
-
-if is_hpu:
-    import habana_frameworks.torch as htorch
 
 
 class MllamaImagePixelInputs(TypedDict):
@@ -515,8 +509,6 @@ class MllamaVisionEncoder(nn.Module):
     ) -> Union[Tuple, BaseModelOutput]:
         encoder_states = ()
 
-        if is_hpu:
-            htorch.core.mark_step()
         for i, encoder_layer in enumerate(self.layers):
             if i in self.output_hidden_states:
                 encoder_states = encoder_states + (hidden_states, )
@@ -524,8 +516,6 @@ class MllamaVisionEncoder(nn.Module):
                 hidden_states,
                 attention_mask,
             )
-            if is_hpu:
-                htorch.core.mark_step()
 
         if len(self.layers) - 1 in self.output_hidden_states:
             encoder_states = encoder_states + (hidden_states, )
@@ -1030,8 +1020,6 @@ class MllamaTextModel(nn.Module):
     ) -> torch.Tensor:
         inputs_embeds = self.embed_tokens(input_ids)
         hidden_states = inputs_embeds
-        if is_hpu:
-            htorch.core.mark_step()
         for idx, decoder_layer in enumerate(self.layers):
             if isinstance(decoder_layer, MllamaCrossAttentionDecoderLayer):
                 if not skip_cross_attention:
@@ -1057,8 +1045,6 @@ class MllamaTextModel(nn.Module):
             else:
                 raise ValueError(
                     f"Unknown decoder layer type {type(decoder_layer)}")
-            if is_hpu:
-                htorch.core.mark_step()
         hidden_states = self.norm(hidden_states)
         return hidden_states
 

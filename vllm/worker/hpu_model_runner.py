@@ -502,17 +502,19 @@ class HpuModelAdapterEncoderDecoder(HpuModelAdapter):
                             block_size,
                             rounding_mode="floor")
         offsets = torch.fmod(cross_slot_mapping, block_size)
-        metadata = metadata._replace(block_offsets=offsets,
-                                     block_indices=indices)
+        metadata = metadata._replace(cross_block_offsets=offsets,
+                                     cross_block_indices=indices)
         return metadata
 
     def _update_cross_metadata(self, attn_metadata, batch_size, device, dtype):
-        attn_metadata = self._set_cross_block_mapping(attn_metadata,
-                                                      batch_size, device,
-                                                      dtype)
-        attn_metadata = self._set_cross_block_scales(attn_metadata, device)
-        attn_metadata = self._set_cross_indices_and_offsets(
-            attn_metadata, self.block_size)
+        if attn_metadata.is_prompt:
+            attn_metadata = self._set_cross_indices_and_offsets(
+                attn_metadata, self.block_size)
+        else:
+            attn_metadata = self._set_cross_block_mapping(
+                attn_metadata, batch_size, device, dtype)
+            attn_metadata = self._set_cross_block_scales(attn_metadata, device)
+
         return attn_metadata
 
     def forward(self, *args, **kwargs):
@@ -1087,11 +1089,11 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         else:
             prefix_block_list_tensor = None
 
-        input_tokens = make_tensor_with_pad(input_tokens,
-                                            max_len=max_prompt_len,
-                                            pad=0,
-                                            dtype=torch.long,
-                                            device='cpu')
+        input_tokens_tensor = make_tensor_with_pad(input_tokens,
+                                                   max_len=max_prompt_len,
+                                                   pad=0,
+                                                   dtype=torch.long,
+                                                   device='cpu')
 
         input_positions = make_tensor_with_pad(input_positions,
                                                max_len=max_prompt_len,
@@ -1113,10 +1115,12 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                            dtype=torch.long,
                                            device='cpu')
 
+        # Note: num_prefill_tokens is calculated using the length of input_tokens after padding.
+        num_prefill_tokens = input_tokens_tensor.numel()
         if prefix_block_list_tensor:
             prefix_block_list_tensor = prefix_block_list_tensor.to(
                 self.device, non_blocking=True)
-        input_tokens = input_tokens.to(  # type: ignore
+        input_tokens_tensor = input_tokens_tensor.to(  # type: ignore
             self.device, non_blocking=True)
         input_positions = input_positions.to(  # type: ignore
             self.device, non_blocking=True)
@@ -1140,7 +1144,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             seq_lens_tensor=seq_lens_tensor,
             context_lens_tensor=context_lens_tensor,
             num_prefills=real_num_seqs,
-            num_prefill_tokens=sum_query_len,
+            num_prefill_tokens=num_prefill_tokens,
             num_decode_tokens=0,
             slot_mapping=slot_mapping,
             multi_modal_placeholder_index_maps=
@@ -1152,7 +1156,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                 multi_modal_kwargs[t] = multi_modal_kwargs[t].to(
                     self.device, non_blocking=True)
 
-        return PreparePromptMetadata(input_tokens=input_tokens,
+        return PreparePromptMetadata(input_tokens=input_tokens_tensor,
                                      input_positions=input_positions,
                                      attn_metadata=attn_metadata,
                                      seq_lens=seq_lens,
@@ -1375,8 +1379,9 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                         block_offset = i % self.block_size
                         slot = block_number * self.block_size + block_offset
                         cross_slot_mapping.append(slot)
-            attn_metadata.cross_slot_mapping_tensor = torch.tensor(
-                cross_slot_mapping, dtype=torch.long, device=self.device)
+            attn_metadata.cross_slot_mapping = torch.tensor(cross_slot_mapping,
+                                                            dtype=torch.long,
+                                                            device=self.device)
         else:
             for seq_group_metadata in seq_group_metadata_list:
                 for _ in range(len(seq_group_metadata.seq_data)):
@@ -1645,6 +1650,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             'cross_block_indices',
             'cross_block_offsets',
             'cross_block_list',
+            'cross_slot_mapping',
             'cross_block_mapping',
             'cross_block_groups',
             'cross_block_scales',

@@ -80,6 +80,7 @@ class HPUAttentionMetadata(HPUPagedAttentionMetadata, AttentionMetadata):
     cross_block_indices: Optional[torch.Tensor] = None
     cross_block_offsets: Optional[torch.Tensor] = None
     cross_block_list: Optional[torch.Tensor] = None
+    cross_slot_mapping: Optional[torch.Tensor] = None
     cross_block_mapping: Optional[torch.Tensor] = None
     cross_block_groups: Optional[torch.Tensor] = None
     cross_block_scales: Optional[torch.Tensor] = None
@@ -173,7 +174,8 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
         Returns:
             shape = [num_tokens, num_heads * head_size]
         """
-        if attn_type != AttentionType.DECODER and attn_type != AttentionType.ENCODER_DECODER:
+        if (attn_type != AttentionType.DECODER
+                and attn_type != AttentionType.ENCODER_DECODER):
             raise NotImplementedError("Encoder self-attention "
                                       "is not implemented for "
                                       "HPUAttentionImpl")
@@ -303,13 +305,14 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
         Returns:
             shape = [num_tokens, num_heads * head_size]
         """
-        batch_size, _, _ = query.shape
+        batch_size, _ = query.shape
 
         if attn_metadata.is_prompt:
             batch_size = attn_metadata.num_prefills
-            batched_tokens, _, _ = query.shape
+            batched_tokens, _ = query.shape
             batched_kv_tokens, _, _ = key.shape
-            assert batch_size > 0, "In prefill stage the num_prefills should be > 0"
+            assert batch_size > 0, (
+                "In prefill stage the num_prefills should be > 0")
             assert batched_tokens % batch_size == 0
             assert batched_kv_tokens % batch_size == 0
             seq_len = batched_tokens // batch_size
