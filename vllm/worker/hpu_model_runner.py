@@ -507,6 +507,8 @@ class HpuModelAdapterEncoderDecoder(HpuModelAdapter):
         return metadata
 
     def _update_cross_metadata(self, attn_metadata, batch_size, device, dtype):
+        if max(attn_metadata.encoder_seq_lens) == 0:
+            return attn_metadata
         if attn_metadata.is_prompt:
             attn_metadata = self._set_cross_indices_and_offsets(
                 attn_metadata, self.block_size)
