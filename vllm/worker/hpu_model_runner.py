@@ -707,7 +707,6 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         kv_cache_dtype: Optional[str] = "auto",
         is_driver_worker: bool = False,
         return_hidden_states: bool = False,
-        is_encoder_decoder_model: bool = False,
         input_registry: InputRegistry = INPUT_REGISTRY,
         mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
     ):
@@ -715,7 +714,6 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         self.is_driver_worker = is_driver_worker
         self.return_hidden_states = return_hidden_states
 
-        self.is_encoder_decoder_model = is_encoder_decoder_model
         self.sliding_window = (self.model_config.get_sliding_window()
                                if self.model_config is not None else None)
         self.device_config = (self.device_config if self.device_config
@@ -872,18 +870,22 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             torch.hpu.synchronize()
 
             with HabanaMemoryProfiler() as m_wrap:
-                self.model = _maybe_wrap_in_hpu_graph(
+                self.model = self._maybe_wrap_in_hpu_graph(
                     self.model,
                     self.block_size,
                     dtype=self.model_config.dtype,
-                    enforce_eager=self.enforce_eager,
-                    is_encoder_decoder_model=self.is_encoder_decoder_model)
+                    enforce_eager=self.enforce_eager)
             msg = f"Wrapping in HPU Graph took {m_wrap.get_summary_string()}"
             logger.info(msg)
 
         self.model_memory_usage = m.consumed_device_memory
         msg = f"Loading model weights took in total {m.get_summary_string()}"
         logger.info(msg)
+
+    def _maybe_wrap_in_hpu_graph(self, *args, **kwargs):
+        return htorch.hpu.wrap_in_hpu_graph(
+            HpuModelAdapter(*args, **kwargs), disable_tensor_cache=True
+        ) if htorch.utils.internal.is_lazy() else HpuModelAdapter(*args, **kwargs)
 
     def _use_graphs(self, batch_size, seq_len, is_prompt):
         if self.enforce_eager:
@@ -1341,103 +1343,6 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                      slot_mapping=slot_mapping,
                                      lora_ids=lora_ids)
 
-    def _prepare_encoder_model_input_tensors(
-        self,
-        seq_group_metadata_list: List[SequenceGroupMetadata],
-        model_input: ModelInputForHPUWithSamplingMetadata,
-    ):
-
-        def _list_to_int32_tensor(
-            _list: List[int],
-            device,
-        ) -> torch.Tensor:
-            return torch.tensor(_list, dtype=torch.int32, device=device)
-
-        if len(seq_group_metadata_list) == 0:
-            return None
-
-        # Since we are not supporting chunked prefill either the entire
-        # batch is prefill or it is decode
-        is_prompt = seq_group_metadata_list[0].is_prompt
-        # Build encoder inputs
-        encoder_seq_lens: List[int] = []
-        cross_block_tables: List[List[int]] = []
-        cross_slot_mapping: List[int] = []
-        attn_metadata = model_input.attn_metadata
-        assert attn_metadata is not None
-        if is_prompt:
-            for seq_group_metadata in seq_group_metadata_list:
-                # Build seq lens
-                seq_len = seq_group_metadata.encoder_seq_data.get_len(
-                ) if seq_group_metadata.encoder_seq_data else 0
-                encoder_seq_lens.append(seq_len)
-                # Build slot mapping
-                if seq_group_metadata.cross_block_table is None:
-                    cross_slot_mapping.extend([_PAD_SLOT_ID] * seq_len)
-                else:
-                    for i in range(0, seq_len):
-                        block_number = seq_group_metadata.cross_block_table[
-                            i // self.block_size]
-                        block_offset = i % self.block_size
-                        slot = block_number * self.block_size + block_offset
-                        cross_slot_mapping.append(slot)
-            attn_metadata.cross_slot_mapping = torch.tensor(cross_slot_mapping,
-                                                            dtype=torch.long,
-                                                            device=self.device)
-        else:
-            for seq_group_metadata in seq_group_metadata_list:
-                for _ in range(len(seq_group_metadata.seq_data)):
-                    seq_len = seq_group_metadata.encoder_seq_data.get_len(
-                    ) if seq_group_metadata.encoder_seq_data else 0
-                    encoder_seq_lens.append(seq_len)
-                    cross_block_table = seq_group_metadata.cross_block_table
-                    cross_block_tables.append([] if (
-                        cross_block_table is None) else cross_block_table)
-
-            last_block_usage = [(seq_len - 1) % self.block_size + 1
-                                for seq_len in encoder_seq_lens]
-            block_groups = [[i] * len(bt)
-                            for i, bt in enumerate(cross_block_tables)]
-            block_usage = [
-                [self.block_size] * (len(bt) - 1) + [lbu]
-                for bt, lbu in zip(cross_block_tables, last_block_usage) if bt
-            ]
-
-            block_list = flatten(cross_block_tables)
-            block_groups = flatten(block_groups)
-            block_usage = flatten(block_usage)
-
-            assert len(block_list) == len(block_groups)
-            assert len(block_list) == len(block_usage)
-
-            block_list = torch.tensor(block_list,
-                                      dtype=torch.int,
-                                      device='cpu')
-            block_groups = torch.tensor(block_groups,
-                                        dtype=torch.int,
-                                        device='cpu')
-            block_usage = torch.tensor(block_usage,
-                                       dtype=self.model_config.dtype,
-                                       device='cpu')
-
-            block_list = block_list.to(  # type: ignore
-                self.device, non_blocking=True)
-            block_groups = block_groups.to(  # type: ignore
-                self.device, non_blocking=True)
-            block_usage = block_usage.to(  # type: ignore
-                self.device, non_blocking=True)
-
-            attn_metadata.cross_block_list = block_list
-            attn_metadata.cross_block_groups = block_groups
-            attn_metadata.cross_block_usage = block_usage
-
-        encoder_seq_lens_tensor = _list_to_int32_tensor(
-            encoder_seq_lens, self.device)
-        attn_metadata.encoder_seq_lens = encoder_seq_lens
-        attn_metadata.encoder_seq_lens_tensor = encoder_seq_lens_tensor
-
-        return attn_metadata
-
     def prepare_input_tensors(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
@@ -1643,21 +1548,6 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             'block_offsets',
             'block_scales',
             'block_groups',
-            'num_prefill_tokens',
-            'num_decode_tokens',
-            'num_prefills',
-            'seq_lens',
-            'encoder_seq_lens',
-            'encoder_seq_lens_tensor',
-            'cross_block_indices',
-            'cross_block_offsets',
-            'cross_block_list',
-            'cross_slot_mapping',
-            'cross_block_mapping',
-            'cross_block_groups',
-            'cross_block_scales',
-            'cross_block_usage',
-            'cross_attn_bias',
         ])
         return attention_metadata
 
@@ -2059,6 +1949,20 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         logger.info(msg)
         self.profiler.end()
 
+    def shutdown_inc(self):
+        can_finalize_inc = False
+        from contextlib import suppress
+        with suppress(AttributeError):
+            can_finalize_inc = (self.model_config.quantization == 'inc') and \
+                (self.model.model is not None) and \
+                self.inc_initialized_successfully and \
+                not getattr(self, "_is_inc_finalized", False)
+        if can_finalize_inc:
+            from neural_compressor.torch.quantization import (
+                finalize_calibration)
+            finalize_calibration(self.model.model)
+            self._is_inc_finalized = True
+
     @property
     def vocab_size(self) -> int:
         return self.model_config.get_vocab_size()
@@ -2070,15 +1974,6 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
     @mem_margin.setter
     def mem_margin(self, value):
         self._mem_margin = value
-
-
-def _maybe_wrap_in_hpu_graph(*args, **kwargs):
-    is_encoder_decoder_model = kwargs.pop("is_encoder_decoder_model", False)
-    if is_encoder_decoder_model:
-        return HpuModelAdapterEncoderDecoder(*args, **kwargs)
-    return htorch.hpu.wrap_in_hpu_graph(
-        HpuModelAdapter(*args, **kwargs), disable_tensor_cache=True
-    ) if htorch.utils.internal.is_lazy() else HpuModelAdapter(*args, **kwargs)
 
 
 class HabanaProfilerCounterHelper:
@@ -2219,13 +2114,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     seq_group_metadata_list=seq_group_metadata_list)
             model_input, sampling_metadata = self.prepare_input_tensors(
                 seq_group_metadata_list)
-            if self.is_encoder_decoder_model:
-                attn_metadata = self._prepare_encoder_model_input_tensors(
-                    seq_group_metadata_list, model_input)
-                model_input = dataclasses.replace(
-                    model_input,
-                    attn_metadata=attn_metadata,
-                )
             assert model_input.attn_metadata is not None
             is_prompt = model_input.attn_metadata.is_prompt
 
@@ -2600,20 +2488,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             sampler_outputs.append(
                 CompletionSequenceGroupOutput(seq_outputs, None))
         return SamplerOutput(sampler_outputs)
-
-    def shutdown_inc(self):
-        can_finalize_inc = False
-        from contextlib import suppress
-        with suppress(AttributeError):
-            can_finalize_inc = (self.model_config.quantization == 'inc') and \
-                (self.model.model is not None) and \
-                self.inc_initialized_successfully and \
-                not getattr(self, "_is_inc_finalized", False)
-        if can_finalize_inc:
-            from neural_compressor.torch.quantization import (
-                finalize_calibration)
-            finalize_calibration(self.model.model)
-            self._is_inc_finalized = True
 
     def __del__(self):
         self.shutdown_inc()
