@@ -5,6 +5,7 @@
 import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Type
+import torch.nn.functional as F
 
 import torch
 import vllm_hpu_extension.ops as ops
@@ -353,17 +354,29 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
             attn_bias = torch.zeros((batch_size, 1, 1, 1),
                                     device=query.device,
                                     dtype=torch.bool)
-            out = ops.prompt_attention(
-                query.view(query_shape),
-                key.view(kv_shape),
-                value.view(kv_shape),
-                attn_bias=attn_bias,
-                p=0.0,
-                scale=self.scale,
-                matmul_qk_op=self.matmul_qk,
-                softmax_op=self.softmax,
-                matmul_av_op=self.matmul_av,
-            )
+            q = query.view(query_shape).transpose(1, 2)
+            k = key.view(kv_shape).transpose(1, 2)
+            v = value.view(kv_shape).transpose(1, 2)
+            # print("num_heads", self.num_heads)
+            # print("num_kv_heads", self.num_kv_heads)
+            k = k.repeat_interleave(q.size(-3)//k.size(-3), -3)
+            v = v.repeat_interleave(q.size(-3)//v.size(-3), -3)
+            out = F.scaled_dot_product_attention(q,
+                                                k,
+                                                v,
+                                                is_causal=False)
+            out = out.transpose(1, 2).contiguous()
+            # out = ops.prompt_attention(
+            #     query.view(query_shape),
+            #     key.view(kv_shape),
+            #     value.view(kv_shape),
+            #     attn_bias=attn_bias,
+            #     p=0.0,
+            #     scale=self.scale,
+            #     matmul_qk_op=self.matmul_qk,
+            #     softmax_op=self.softmax,
+            #     matmul_av_op=self.matmul_av,
+            # )
             output = out.reshape(batch_size, seq_len, hidden_size)
         else:
             # Enc/dec cross-attention KVs match encoder sequence length;
