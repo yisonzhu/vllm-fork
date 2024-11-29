@@ -337,7 +337,7 @@ def run_mllama(question: str, modality: str):
         model=model_name,
         max_model_len=4096,
         max_num_seqs=16,
-        # enforce_eager=True,
+        enforce_eager=True,
     )
 
     prompt = f"<|image|><|begin_of_text|>{question}"
@@ -496,15 +496,11 @@ def main(args):
             },
         } for _ in range(args.num_prompts)]
 
-    import time
-    start = time.time()
     outputs = llm.generate(inputs, sampling_params=sampling_params)
-    
 
     for o in outputs:
         generated_text = o.outputs[0].text
         print(generated_text)
-    print(f"Time taken: {time.time() - start:.2f} seconds")
 
 
 if __name__ == "__main__":

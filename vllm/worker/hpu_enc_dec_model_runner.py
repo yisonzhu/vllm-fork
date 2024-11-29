@@ -4,7 +4,7 @@ import dataclasses
 import itertools
 from array import array
 from functools import partial
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Type, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, cast
 
 import torch
 
@@ -12,9 +12,7 @@ import habana_frameworks.torch as htorch
 from vllm_hpu_extension.ops import batch2block, block2batch
 
 from vllm.attention import AttentionMetadata
-from vllm.model_executor import SamplingMetadata
 from vllm.model_executor.layers.sampler import SamplerOutput
-from vllm.multimodal import MultiModalKwargs
 from vllm.sequence import SequenceData, IntermediateTensors, SequenceGroupMetadata
 from vllm.sampling_params import SamplingParams
 from vllm.logger import init_logger
@@ -31,7 +29,6 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
-_TYPE_CACHE = {}
 # These values are assumed to be zero in several places.
 # Use caution when updating them!
 _PAD_SLOT_ID = 0
@@ -103,23 +100,24 @@ class HpuModelAdapterEncoderDecoder(HpuModelAdapter):
         return metadata
 
     def _update_seq_lens(self, attn_metadata, batch_size, seq_len, device):
-        # Set the seq_lens to after-padding sequence lenths to prevent graph recapturing.
+        # Set the seq_lens to after-padding sequence lengths to prevent graph recapturing.
         seq_lens = batch_size * [seq_len]
         seq_lens_tensor = torch.tensor(seq_lens,
-                                        dtype=torch.long,
-                                        device=device)
+                                       dtype=torch.long,
+                                       device=device)
         attn_metadata = attn_metadata._replace(seq_lens=seq_lens,
-                                            seq_lens_tensor=seq_lens_tensor)
+                                               seq_lens_tensor=seq_lens_tensor)
         return attn_metadata
 
-    def _update_cross_metadata(self, attn_metadata, batch_size, seq_len, device, dtype):
+    def _update_cross_metadata(self, attn_metadata, batch_size, seq_len,
+                               device, dtype):
         if max(attn_metadata.encoder_seq_lens) == 0:
             return attn_metadata
         if attn_metadata.is_prompt:
             attn_metadata = self._set_cross_indices_and_offsets(
                 attn_metadata, self.block_size)
-            attn_metadata = self._update_seq_lens(
-                attn_metadata, batch_size, seq_len, device)
+            attn_metadata = self._update_seq_lens(attn_metadata, batch_size,
+                                                  seq_len, device)
         else:
             attn_metadata = self._set_cross_block_mapping(
                 attn_metadata, batch_size, device, dtype)
@@ -137,12 +135,14 @@ class HpuModelAdapterEncoderDecoder(HpuModelAdapter):
             kwargs['attn_metadata'], input_ids.size(0), input_ids.size(1),
             input_ids.device, self.dtype)
         kwargs['attn_metadata'] = self._update_cross_metadata(
-            kwargs['attn_metadata'], input_ids.size(0), input_ids.size(1), input_ids.device,
-            self.dtype)
+            kwargs['attn_metadata'], input_ids.size(0), input_ids.size(1),
+            input_ids.device, self.dtype)
         if htorch.utils.internal.is_lazy() and hasattr(self.model,
                                                        "language_model"):
             bypass_hpu_graphs = kwargs.get('bypass_hpu_graphs', False)
-            self.model.language_model.forward = partial(self.model.language_model.forward, bypass_hpu_graphs=bypass_hpu_graphs)
+            self.model.language_model.forward = partial(
+                self.model.language_model.forward,
+                bypass_hpu_graphs=bypass_hpu_graphs)
         # TODO: Change the input_ids to 1D to match the public vllm implementation
         # and avoid shape mismatch issues with some models(i.e. Mllama). But currently
         # this will cause graph building error.
@@ -327,8 +327,7 @@ class HPUEncoderDecoderModelRunner(
             attn_metadata.cross_block_groups = block_groups
             attn_metadata.cross_block_usage = block_usage
 
-        encoder_seq_lens_tensor = self._list_to_int32_tensor(
-            encoder_seq_lens)
+        encoder_seq_lens_tensor = self._list_to_int32_tensor(encoder_seq_lens)
         attn_metadata.encoder_seq_lens = encoder_seq_lens
         attn_metadata.encoder_seq_lens_tensor = encoder_seq_lens_tensor
 
@@ -337,8 +336,9 @@ class HPUEncoderDecoderModelRunner(
     def profile_run(self) -> None:
         num_layers = self.model_config.get_num_layers(self.parallel_config)
         kv_caches = [None] * num_layers
-        max_batch_size = min(self.bucketing_global_state.prompt_bs_bucket_cfg[-1],
-                             self.scheduler_config.max_num_seqs)
+        max_batch_size = min(
+            self.bucketing_global_state.prompt_bs_bucket_cfg[-1],
+            self.scheduler_config.max_num_seqs)
         max_seq_len = self.max_num_batched_tokens // max_batch_size
 
         self.warmup_scenario(max_batch_size, max_seq_len, True, kv_caches,
@@ -350,7 +350,8 @@ class HPUEncoderDecoderModelRunner(
                         seq_len,
                         is_prompt,
                         kv_caches,
-                        is_pt_profiler_run=False) -> None:
+                        is_pt_profiler_run=False,
+                        is_lora_profile_run=False) -> None:
         use_graphs = self._use_graphs(batch_size, seq_len, is_prompt)
         scenario_name = ("warmup_"
                          f"{'prompt' if is_prompt else 'decode'}_"
@@ -361,10 +362,7 @@ class HPUEncoderDecoderModelRunner(
         times = 3 if use_graphs or is_pt_profiler_run else 1
         if is_prompt:
             seqs = [
-                self.create_dummy_seq_group_metadata(
-                    i,
-                    seq_len,
-                    is_prompt)
+                self.create_dummy_seq_group_metadata(i, seq_len, is_prompt)
                 for i in range(batch_size)
             ]
         else:
@@ -372,10 +370,9 @@ class HPUEncoderDecoderModelRunner(
             blocks = [seq_len // batch_size for _ in range(batch_size)]
             blocks[0] += seq_len % batch_size
             seqs = [
-                self.create_dummy_seq_group_metadata(
-                    i,
-                    b * self.block_size - 1,
-                    is_prompt)
+                self.create_dummy_seq_group_metadata(i,
+                                                     b * self.block_size - 1,
+                                                     is_prompt)
                 for i, b in enumerate(blocks)
             ]
         torch.hpu.synchronize()
@@ -397,19 +394,22 @@ class HPUEncoderDecoderModelRunner(
     def create_dummy_seq_group_metadata(self,
                                         group_id,
                                         seq_len,
-                                        is_prompt):
+                                        is_prompt,
+                                        lora_request=None):
         sampling_params = SamplingParams(temperature=0)
         num_blocks = math.ceil(seq_len / self.block_size)
-        cross_block_table: List[int] = None
+        cross_block_table: Optional[List[int]] = None
         encoder_dummy_data \
             = self.input_registry.dummy_data_for_profiling(
                 self.model_config,
                                         seq_len,
                                         self.mm_registry,
                                         is_encoder_data=True)
-        mm_counts = self.mm_registry.get_mm_limits_per_prompt(self.model_config)
+        mm_counts = self.mm_registry.get_mm_limits_per_prompt(
+            self.model_config)
         num_images = mm_counts["image"]
-        max_mm_tokens = self.mm_registry.get_max_multimodal_tokens(self.model_config) * num_images
+        max_mm_tokens = self.mm_registry.get_max_multimodal_tokens(
+            self.model_config) * num_images
         num_cross_blocks = math.ceil(max_mm_tokens / self.block_size)
         seq_len = max(seq_len, 1)
         if is_prompt:
@@ -427,14 +427,15 @@ class HPUEncoderDecoderModelRunner(
         prompt_token_ids_array = array('l', prompt_token_ids)  # noqa: F821
         seq_data = SequenceData(prompt_token_ids_array)
         seq_data.output_token_ids = output_token_ids
-        return SequenceGroupMetadata(request_id=str(group_id),
-                                     is_prompt=(output_len == 0),
-                                     seq_data={group_id: seq_data},
-                                     sampling_params=sampling_params,
-                                     block_tables=block_tables,
-                                     encoder_seq_data=encoder_dummy_data.seq_data,
-                                     multi_modal_data=encoder_dummy_data.multi_modal_data,
-                                     cross_block_table=cross_block_table)
+        return SequenceGroupMetadata(
+            request_id=str(group_id),
+            is_prompt=(output_len == 0),
+            seq_data={group_id: seq_data},
+            sampling_params=sampling_params,
+            block_tables=block_tables,
+            encoder_seq_data=encoder_dummy_data.seq_data,
+            multi_modal_data=encoder_dummy_data.multi_modal_data,
+            cross_block_table=cross_block_table)
 
     def trim_attn_metadata(self, metadata: AttentionMetadata) -> object:
         # NOTE(kzawora): To anyone working on this in the future:
@@ -508,7 +509,8 @@ class HPUEncoderDecoderModelRunner(
     ) -> Optional[List[SamplerOutput]]:
         if num_steps > 1:
             raise ValueError(
-                "num_steps > 1 is not supported in HPUEncoderDecoderModelRunner")
+                "num_steps > 1 is not supported in HPUEncoderDecoderModelRunner"
+            )
 
         input_tokens = model_input.input_tokens
         input_positions = model_input.input_positions

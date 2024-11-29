@@ -442,105 +442,6 @@ class HpuModelAdapter:
         return self.model.sampler
 
 
-class HpuModelAdapterEncoderDecoder(HpuModelAdapter):
-
-    def __init__(self, model, block_size, dtype, enforce_eager):
-        super().__init__(model, block_size, dtype, enforce_eager)
-
-        # We only wrap the language model in HPU graph because some Ops in vision model will fallback to CPU and cause the graph building fail.
-        if htorch.utils.internal.is_lazy() and hasattr(self.model,
-                                                       "language_model"):
-            self.model.language_model = htorch.hpu.wrap_in_hpu_graph(
-                self.model.language_model, disable_tensor_cache=True)
-
-    def _set_cross_block_mapping(self, metadata, batch_size, device, dtype):
-        mask = torch.arange(0,
-                            self.block_size,
-                            device=device,
-                            dtype=torch.int32).unsqueeze(0)
-
-        cross_attn_mask = mask >= metadata.cross_block_usage.unsqueeze(-1)
-        cross_attn_bias = (torch.zeros_like(cross_attn_mask,
-                                            dtype=dtype).masked_fill_(
-                                                cross_attn_mask, -math.inf))
-
-        if not is_fake_hpu() and htorch.utils.internal.is_lazy():
-            cross_block_mapping = torch.nn.functional.one_hot(
-                metadata.cross_block_groups, num_classes=batch_size)
-        else:
-            # Unfortunately one_hot on CPU/torch.compile mode/eager mode
-            # doesn't handle out of bounds classes so we need to convert
-            # all negative values to 0 (block_mapping) or bs (block_groups)
-            cross_block_groups = metadata.cross_block_groups.to(torch.long)
-            cross_block_mapping = torch.nn.functional.relu(cross_block_groups)
-            cross_block_mapping = torch.nn.functional.one_hot(
-                cross_block_mapping, num_classes=batch_size)
-            oob_values = cross_block_groups.lt(0)
-            cross_block_mapping.masked_fill_(oob_values.unsqueeze(-1), 0)
-            cross_block_groups.masked_fill_(oob_values, batch_size)
-            metadata = metadata._replace(cross_block_groups=cross_block_groups)
-
-        cross_block_mapping = cross_block_mapping.to(dtype)
-        metadata = metadata._replace(cross_block_mapping=cross_block_mapping,
-                                     cross_attn_bias=cross_attn_bias)
-        return metadata
-
-    def _set_cross_block_scales(self, metadata, device):
-        cross_block_mapping = metadata.cross_block_mapping
-        ones = torch.ones((cross_block_mapping.size(0), ),
-                          device=device,
-                          dtype=cross_block_mapping.dtype)
-        sums = batch2block(block2batch(ones, cross_block_mapping),
-                           cross_block_mapping)
-        cross_block_scales = torch.reciprocal(torch.maximum(ones, sums))
-        metadata = metadata._replace(cross_block_scales=cross_block_scales)
-        return metadata
-
-    def _set_cross_indices_and_offsets(self, metadata, block_size):
-        cross_slot_mapping = metadata.cross_slot_mapping.flatten()
-        indices = torch.div(cross_slot_mapping,
-                            block_size,
-                            rounding_mode="floor")
-        offsets = torch.fmod(cross_slot_mapping, block_size)
-        metadata = metadata._replace(cross_block_offsets=offsets,
-                                     cross_block_indices=indices)
-        return metadata
-
-    def _update_cross_metadata(self, attn_metadata, batch_size, device, dtype):
-        if max(attn_metadata.encoder_seq_lens) == 0:
-            return attn_metadata
-        if attn_metadata.is_prompt:
-            attn_metadata = self._set_cross_indices_and_offsets(
-                attn_metadata, self.block_size)
-        else:
-            attn_metadata = self._set_cross_block_mapping(
-                attn_metadata, batch_size, device, dtype)
-            attn_metadata = self._set_cross_block_scales(attn_metadata, device)
-
-        return attn_metadata
-
-    def forward(self, *args, **kwargs):
-        kwargs = kwargs.copy()
-        selected_token_indices = kwargs.pop('selected_token_indices')
-        if 'warmup_mode' in kwargs:
-            kwargs.pop('warmup_mode')
-        input_ids = kwargs['input_ids']
-        kwargs['attn_metadata'] = self._update_metadata(
-            kwargs['attn_metadata'], input_ids.size(0), input_ids.size(1),
-            input_ids.device, self.dtype)
-        kwargs['attn_metadata'] = self._update_cross_metadata(
-            kwargs['attn_metadata'], input_ids.size(0), input_ids.device,
-            self.dtype)
-        # Change the input_ids to 1D to match the public vllm implementation
-        # and avoid shape mismatch issues with some models.
-        # kwargs['input_ids'] = input_ids.flatten()
-        LoraMask.setLoraMask(kwargs.pop('lora_mask'))
-        hidden_states = self.model(*args, **kwargs)
-        hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
-        hidden_states = hidden_states.index_select(0, selected_token_indices)
-        return hidden_states
-
-
 class PreparePromptMetadata(NamedTuple):
     input_tokens: torch.Tensor
     input_positions: List[List[int]]
@@ -885,7 +786,8 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
     def _maybe_wrap_in_hpu_graph(self, *args, **kwargs):
         return htorch.hpu.wrap_in_hpu_graph(
             HpuModelAdapter(*args, **kwargs), disable_tensor_cache=True
-        ) if htorch.utils.internal.is_lazy() else HpuModelAdapter(*args, **kwargs)
+        ) if htorch.utils.internal.is_lazy() else HpuModelAdapter(
+            *args, **kwargs)
 
     def _use_graphs(self, batch_size, seq_len, is_prompt):
         if self.enforce_eager:
@@ -1949,6 +1851,10 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         logger.info(msg)
         self.profiler.end()
 
+    def finish_measurements(self):
+        from neural_compressor.torch.quantization import finalize_calibration
+        finalize_calibration(self.model.model)
+
     def shutdown_inc(self):
         can_finalize_inc = False
         from contextlib import suppress
@@ -2121,10 +2027,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                    sampling_metadata=sampling_metadata,
                                    is_prompt=is_prompt,
                                    virtual_engine=virtual_engine)
-
-    def finish_measurements(self):
-        from neural_compressor.torch.quantization import finalize_calibration
-        finalize_calibration(self.model.model)
 
     def _check_config(self, batch_size, seq_len, is_prompt, warmup_mode):
         cfg = (batch_size, seq_len, is_prompt)
