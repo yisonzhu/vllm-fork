@@ -102,12 +102,24 @@ class HpuModelAdapterEncoderDecoder(HpuModelAdapter):
                                      cross_block_indices=indices)
         return metadata
 
-    def _update_cross_metadata(self, attn_metadata, batch_size, device, dtype):
+    def _update_seq_lens(self, attn_metadata, batch_size, seq_len, device):
+        # Set the seq_lens to after-padding sequence lenths to prevent graph recapturing.
+        seq_lens = batch_size * [seq_len]
+        seq_lens_tensor = torch.tensor(seq_lens,
+                                        dtype=torch.long,
+                                        device=device)
+        attn_metadata = attn_metadata._replace(seq_lens=seq_lens,
+                                            seq_lens_tensor=seq_lens_tensor)
+        return attn_metadata
+
+    def _update_cross_metadata(self, attn_metadata, batch_size, seq_len, device, dtype):
         if max(attn_metadata.encoder_seq_lens) == 0:
             return attn_metadata
         if attn_metadata.is_prompt:
             attn_metadata = self._set_cross_indices_and_offsets(
                 attn_metadata, self.block_size)
+            attn_metadata = self._update_seq_lens(
+                attn_metadata, batch_size, seq_len, device)
         else:
             attn_metadata = self._set_cross_block_mapping(
                 attn_metadata, batch_size, device, dtype)
@@ -125,14 +137,15 @@ class HpuModelAdapterEncoderDecoder(HpuModelAdapter):
             kwargs['attn_metadata'], input_ids.size(0), input_ids.size(1),
             input_ids.device, self.dtype)
         kwargs['attn_metadata'] = self._update_cross_metadata(
-            kwargs['attn_metadata'], input_ids.size(0), input_ids.device,
+            kwargs['attn_metadata'], input_ids.size(0), input_ids.size(1), input_ids.device,
             self.dtype)
         if htorch.utils.internal.is_lazy() and hasattr(self.model,
                                                        "language_model"):
             bypass_hpu_graphs = kwargs.get('bypass_hpu_graphs', False)
             self.model.language_model.forward = partial(self.model.language_model.forward, bypass_hpu_graphs=bypass_hpu_graphs)
-        # Change the input_ids to 1D to match the public vllm implementation
-        # and avoid shape mismatch issues with some models.
+        # TODO: Change the input_ids to 1D to match the public vllm implementation
+        # and avoid shape mismatch issues with some models(i.e. Mllama). But currently
+        # this will cause graph building error.
         # kwargs['input_ids'] = input_ids.flatten()
         hidden_states = self.model(*args, **kwargs)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
@@ -251,14 +264,14 @@ class HPUEncoderDecoderModelRunner(
         if is_prompt:
             for seq_group_metadata in seq_group_metadata_list:
                 # Build seq lens
-                seq_len = seq_group_metadata.encoder_seq_data.get_len(
+                encoder_seq_len = seq_group_metadata.encoder_seq_data.get_len(
                 ) if seq_group_metadata.encoder_seq_data else 0
-                encoder_seq_lens.append(seq_len)
+                encoder_seq_lens.append(encoder_seq_len)
                 # Build slot mapping
                 if seq_group_metadata.cross_block_table is None:
-                    cross_slot_mapping.extend([_PAD_SLOT_ID] * seq_len)
+                    cross_slot_mapping.extend([_PAD_SLOT_ID] * encoder_seq_len)
                 else:
-                    for i in range(0, seq_len):
+                    for i in range(0, encoder_seq_len):
                         block_number = seq_group_metadata.cross_block_table[
                             i // self.block_size]
                         block_offset = i % self.block_size
@@ -270,15 +283,15 @@ class HPUEncoderDecoderModelRunner(
         else:
             for seq_group_metadata in seq_group_metadata_list:
                 for _ in range(len(seq_group_metadata.seq_data)):
-                    seq_len = seq_group_metadata.encoder_seq_data.get_len(
+                    encoder_seq_len = seq_group_metadata.encoder_seq_data.get_len(
                     ) if seq_group_metadata.encoder_seq_data else 0
-                    encoder_seq_lens.append(seq_len)
+                    encoder_seq_lens.append(encoder_seq_len)
                     cross_block_table = seq_group_metadata.cross_block_table
                     cross_block_tables.append([] if (
                         cross_block_table is None) else cross_block_table)
 
-            last_block_usage = [(seq_len - 1) % self.block_size + 1
-                                for seq_len in encoder_seq_lens]
+            last_block_usage = [(encoder_seq_len - 1) % self.block_size + 1
+                                for encoder_seq_len in encoder_seq_lens]
             block_groups = [[i] * len(bt)
                             for i, bt in enumerate(cross_block_tables)]
             block_usage = [
