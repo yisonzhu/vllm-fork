@@ -336,9 +336,7 @@ class HPUEncoderDecoderModelRunner(
     def profile_run(self) -> None:
         num_layers = self.model_config.get_num_layers(self.parallel_config)
         kv_caches = [None] * num_layers
-        max_batch_size = min(
-            self.bucketing_global_state.prompt_bs_bucket_cfg[-1],
-            self.scheduler_config.max_num_seqs)
+        max_batch_size = self.scheduler_config.max_num_seqs
         max_seq_len = self.max_num_batched_tokens // max_batch_size
 
         self.warmup_scenario(max_batch_size, max_seq_len, True, kv_caches,
@@ -351,7 +349,8 @@ class HPUEncoderDecoderModelRunner(
                         is_prompt,
                         kv_caches,
                         is_pt_profiler_run=False,
-                        is_lora_profile_run=False) -> None:
+                        is_lora_profile_run=False,
+                        temperature=0) -> None:
         use_graphs = self._use_graphs(batch_size, seq_len, is_prompt)
         scenario_name = ("warmup_"
                          f"{'prompt' if is_prompt else 'decode'}_"
@@ -395,7 +394,8 @@ class HPUEncoderDecoderModelRunner(
                                         group_id,
                                         seq_len,
                                         is_prompt,
-                                        lora_request=None):
+                                        lora_request=None,
+                                        temperature=0):
         sampling_params = SamplingParams(temperature=0)
         num_blocks = math.ceil(seq_len / self.block_size)
         cross_block_table: Optional[List[int]] = None

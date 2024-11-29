@@ -653,9 +653,11 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
 
             hidden_layer_markstep_interval = int(
                 os.getenv('VLLM_CONFIG_HIDDEN_LAYERS', '1'))
+            model_config = getattr(self.model, "config", None)
             modify_decoder_layer(
                 self.model,
-                get_decoder_layer_suffix(self.model.config.model_type),
+                get_decoder_layer_suffix(model_config.model_type if
+                                         model_config is not None else None),
                 hidden_layer_markstep_interval)
             torch.hpu.synchronize()
 
