@@ -1253,7 +1253,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                        dtype=torch.long,
                                        device='cpu')
 
-        num_decode_tokens = sum(seq_lens)
+        num_decode_tokens = len(seq_lens)
 
         last_block_usage = [
             slot[0] % self.block_size + 1 for slot in slot_mapping
