@@ -1,25 +1,25 @@
-import math
-import gc
 import dataclasses
+import gc
 import itertools
+import math
 from array import array
 from functools import partial
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, cast
 
-import torch
-
 import habana_frameworks.torch as htorch
+import torch
 from vllm_hpu_extension.ops import batch2block, block2batch
 
 from vllm.attention import AttentionMetadata
-from vllm.model_executor.layers.sampler import SamplerOutput
-from vllm.sequence import SequenceData, IntermediateTensors, SequenceGroupMetadata
-from vllm.sampling_params import SamplingParams
 from vllm.logger import init_logger
+from vllm.model_executor.layers.sampler import SamplerOutput
+from vllm.sampling_params import SamplingParams
+from vllm.sequence import (IntermediateTensors, SequenceData,
+                           SequenceGroupMetadata)
 from vllm.utils import is_fake_hpu
-from vllm.worker.hpu_model_runner import (subtuple, setup_profiler,
-                                          HPUModelRunnerBase, HpuModelAdapter,
-                                          ModelInputForHPUWithSamplingMetadata)
+from vllm.worker.hpu_model_runner import (HpuModelAdapter, HPUModelRunnerBase,
+                                          ModelInputForHPUWithSamplingMetadata,
+                                          setup_profiler, subtuple)
 from vllm.worker.model_runner_base import (
     _add_attn_metadata_broadcastable_dict,
     _add_sampling_metadata_broadcastable_dict)
@@ -40,7 +40,8 @@ class HpuModelAdapterEncoderDecoder(HpuModelAdapter):
     def __init__(self, model, block_size, dtype, enforce_eager):
         super().__init__(model, block_size, dtype, enforce_eager)
 
-        # We only wrap the language model in HPU graph because some Ops in vision model will fallback to CPU and cause the graph building fail.
+        # We only wrap the language model in HPU graph because some Ops in
+        # vision model will fallback to CPU and cause the graph building fail.
         if htorch.utils.internal.is_lazy() and hasattr(self.model,
                                                        "language_model"):
             self.model.language_model = htorch.hpu.wrap_in_hpu_graph(
@@ -100,7 +101,8 @@ class HpuModelAdapterEncoderDecoder(HpuModelAdapter):
         return metadata
 
     def _update_seq_lens(self, attn_metadata, batch_size, seq_len, device):
-        # Set the seq_lens to after-padding sequence lengths to prevent graph recapturing.
+        # Set the seq_lens to after-padding sequence lengths to prevent
+        # graph recapturing.
         seq_lens = batch_size * [seq_len]
         seq_lens_tensor = torch.tensor(seq_lens,
                                        dtype=torch.long,
@@ -143,9 +145,10 @@ class HpuModelAdapterEncoderDecoder(HpuModelAdapter):
             self.model.language_model.forward = partial(
                 self.model.language_model.forward,
                 bypass_hpu_graphs=bypass_hpu_graphs)
-        # TODO: Change the input_ids to 1D to match the public vllm implementation
-        # and avoid shape mismatch issues with some models(i.e. Mllama). But currently
-        # this will cause graph building error.
+        # TODO: Change the input_ids to 1D to match the public vllm
+        # implementation and avoid shape mismatch issues with some
+        # models(i.e. Mllama). But currently this will cause graph
+        # building error.
         # kwargs['input_ids'] = input_ids.flatten()
         hidden_states = self.model(*args, **kwargs)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
@@ -283,8 +286,9 @@ class HPUEncoderDecoderModelRunner(
         else:
             for seq_group_metadata in seq_group_metadata_list:
                 for _ in range(len(seq_group_metadata.seq_data)):
-                    encoder_seq_len = seq_group_metadata.encoder_seq_data.get_len(
-                    ) if seq_group_metadata.encoder_seq_data else 0
+                    encoder_seq_len = (
+                        seq_group_metadata.encoder_seq_data.get_len()
+                        if seq_group_metadata.encoder_seq_data else 0)
                     encoder_seq_lens.append(encoder_seq_len)
                     cross_block_table = seq_group_metadata.cross_block_table
                     cross_block_tables.append([] if (

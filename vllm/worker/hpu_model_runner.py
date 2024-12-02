@@ -27,9 +27,9 @@ from vllm_hpu_extension.profiler import (HabanaHighLevelProfiler,
 
 from vllm.attention import AttentionMetadata, get_attn_backend
 from vllm.config import DeviceConfig, VllmConfig
-from vllm.inputs import INPUT_REGISTRY, InputRegistry
 from vllm.distributed import broadcast_tensor_dict
 from vllm.distributed.parallel_state import get_world_group
+from vllm.inputs import INPUT_REGISTRY, InputRegistry
 from vllm.logger import init_logger
 from vllm.lora.layers import LoRAMapping
 from vllm.lora.request import LoRARequest
@@ -800,7 +800,6 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                 slot_mapping[-1].append(slot)
 
         max_query_len = max(query_lens)
-        sum_query_len = sum(query_lens)
         real_num_seqs = len(query_lens)
         assert max_query_len > 0
 
@@ -871,7 +870,8 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                            dtype=torch.long,
                                            device='cpu')
 
-        # Note: num_prefill_tokens is calculated using the length of input_tokens after padding.
+        # Note: num_prefill_tokens is calculated using the length of
+        # input_tokens after padding.
         num_prefill_tokens = input_tokens_tensor.numel()
         if prefix_block_list_tensor:
             prefix_block_list_tensor = prefix_block_list_tensor.to(

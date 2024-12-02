@@ -5,7 +5,6 @@
 import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Type
-import torch.nn.functional as F
 
 import torch
 import vllm_hpu_extension.ops as ops
@@ -337,7 +336,8 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
             # If kv_cache is not provided, the new key and value tensors are
             # not cached. This happens during the initial memory profiling run.
             if (key is not None) and (value is not None):
-                # During cross-attention decode, key & value will be None, we don't need to cache them.
+                # During cross-attention decode, key & value will be None,
+                # we don't need to cache them.
                 key_cache = self.k_cache(key, key_cache, block_indices,
                                          block_offsets)
                 value_cache = self.v_cache(value, value_cache, block_indices,
@@ -349,8 +349,10 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
 
             query_shape = (batch_size, -1, self.num_heads, self.head_size)
             kv_shape = (batch_size, -1, self.num_kv_heads, self.head_size)
-            # Just a workaround, to make ops.prompt_attention go into the torch ops assembly path.
-            # TODO: add new prompt_attention op in vllm_hpu_extension which calls FusedSDPA with causal = False.
+            # Just a workaround, to make ops.prompt_attention go into the
+            # torch ops assembly path.
+            # TODO: add new prompt_attention op in vllm_hpu_extension
+            # which calls FusedSDPA with causal = False.
             attn_bias = torch.zeros((batch_size, 1, 1, 1),
                                     device=query.device,
                                     dtype=torch.bool)
