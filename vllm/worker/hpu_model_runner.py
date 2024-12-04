@@ -207,12 +207,7 @@ def get_names_for_rope(model: torch.nn.Module):
 
 class HpuModelAdapter:
 
-    def __init__(self,
-                 model,
-                 block_size,
-                 dtype,
-                 enforce_eager,
-                 layer_names=None):
+    def __init__(self, model, block_size, dtype, enforce_eager, layer_names):
         self.model = model
         self.prefill_use_fusedsdpa = os.getenv('VLLM_PROMPT_USE_FUSEDSDPA',
                                                '1').lower() in ['1', 'true'] \

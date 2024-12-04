@@ -37,8 +37,8 @@ _PAD_BLOCK_ID = 0
 
 class HpuModelAdapterEncoderDecoder(HpuModelAdapter):
 
-    def __init__(self, model, block_size, dtype, enforce_eager):
-        super().__init__(model, block_size, dtype, enforce_eager)
+    def __init__(self, model, block_size, dtype, enforce_eager, layer_names):
+        super().__init__(model, block_size, dtype, enforce_eager, layer_names)
 
         # We only wrap the language model in HPU graph because some Ops in
         # vision model will fallback to CPU and cause the graph building fail.
