@@ -952,8 +952,9 @@ class MllamaCrossAttentionDecoderLayer(torch.nn.Module):
         # TODO: Change input_tokens tensor at the beginning of model execution
         # to 2D tensor to align with public vllm input_tokens shape. But this
         # will face the graph building failure issue, still need to investigate.
-        full_text_row_masked_out_mask = full_text_row_masked_out_mask.view(
-            hidden_states.size(0), -1, 1)
+        if len(hidden_states.shape) == 3:
+            full_text_row_masked_out_mask = full_text_row_masked_out_mask.view(
+                hidden_states.size(0), -1, 1)
         hidden_states = full_text_row_masked_out_mask * hidden_states
         hidden_states = residual + self.cross_attn_attn_gate.tanh(
         ) * hidden_states
