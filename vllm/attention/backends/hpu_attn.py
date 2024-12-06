@@ -305,7 +305,7 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
         Returns:
             shape = [num_tokens, num_heads * head_size]
         """
-        batch_size, _ = query.shape
+        batch_size, hidden_size = query.shape
 
         if attn_metadata.is_prompt:
             batch_size = attn_metadata.num_prefills
@@ -317,7 +317,6 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
             assert batched_kv_tokens % batch_size == 0
             seq_len = batched_tokens // batch_size
 
-        hidden_size = self.num_heads * self.head_size
         query = query.view(-1, self.num_heads, self.head_size)
         if key is not None:
             assert value is not None
