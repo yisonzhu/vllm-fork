@@ -341,7 +341,9 @@ class HPUEncoderDecoderModelRunner(
         num_layers = self.model_config.get_num_layers(self.parallel_config)
         kv_caches = [None] * num_layers
         max_batch_size = self.max_num_prefill_seqs
-        max_seq_len = self.max_num_batched_tokens // max_batch_size
+        _, max_seq_len = self.bucketing_ctx.get_max_prompt_shape()
+        max_seq_len = min(self.max_num_batched_tokens // max_batch_size,
+                          max_seq_len)
 
         self.warmup_scenario(max_batch_size, max_seq_len, True, kv_caches,
                              False)
