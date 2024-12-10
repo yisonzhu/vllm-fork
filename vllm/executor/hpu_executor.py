@@ -48,20 +48,7 @@ class HPUExecutor(ExecutorBase):
                        local_rank: int = 0,
                        rank: int = 0,
                        distributed_init_method: Optional[str] = None):
-        if self.scheduler_config.is_multi_step:
-            module_name = "vllm.worker.multi_step_hpu_worker"
-            class_name = "MultiStepHPUWorker"
-        elif self.speculative_config is not None:
-            module_name = "vllm.spec_decode.spec_decode_worker"
-            class_name = "create_spec_worker"
-        else:
-            module_name = "vllm.worker.hpu_worker"
-            class_name = "HPUWorker"
-
-        wrapper = WorkerWrapperBase(
-            worker_module_name=module_name,
-            worker_class_name=class_name,
-        )
+        wrapper = WorkerWrapperBase(vllm_config=self.vllm_config)
         wrapper.init_worker(**self._get_worker_kwargs(local_rank, rank,
                                                       distributed_init_method))
         return wrapper.worker
@@ -93,9 +80,6 @@ class HPUExecutor(ExecutorBase):
             self.driver_worker.initialize_cache(num_gpu_blocks, num_cpu_blocks)
         msg = f"init_cache_engine took {cache_init_m.get_summary_string()}"
         logger.info(msg)
-
-    def finish_measurements(self):
-        self.driver_worker.finish_measurements()
 
     def execute_model(
             self,
@@ -200,10 +184,8 @@ class HPUExecutor(ExecutorBase):
     def stop_profile(self) -> None:
         self.driver_worker.stop_profile()
 
-    def shutdown(self) -> None:
-        if hasattr(self, "driver_worker") and hasattr(self.driver_worker,
-                                                      'shutdown_inc'):
-            self.driver_worker.shutdown_inc()
+    def shutdown_inc(self) -> None:
+        self.driver_worker.shutdown_inc()
 
 
 class HPUExecutorAsync(HPUExecutor, ExecutorAsyncBase):

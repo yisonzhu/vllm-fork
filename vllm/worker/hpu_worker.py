@@ -88,6 +88,8 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             is_driver_worker=is_driver_worker,
             **speculative_args,
         )
+        if model_runner_cls is not None:
+            self.model_runner = model_runner_cls(self.model_runner)
         # Uninitialized cache engine. Will be initialized by
         # initialize_cache.
         self.cache_engine: List[HPUCacheEngine]
@@ -324,9 +326,6 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         # Reset the seed to ensure that the random state is not affected by
         # the model initialization and profiling.
         set_random_seed(self.model_config.seed)
-
-    def finish_measurements(self):
-        self.model_runner.finish_measurements()
 
     @property
     def do_metadata_broadcast(self) -> bool:

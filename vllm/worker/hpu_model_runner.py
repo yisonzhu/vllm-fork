@@ -2305,6 +2305,3 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             sampler_outputs.append(
                 CompletionSequenceGroupOutput(seq_outputs, None))
         return SamplerOutput(sampler_outputs)
-
-    def __del__(self):
-        self.shutdown_inc()
